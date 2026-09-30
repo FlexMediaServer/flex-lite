@@ -245,6 +245,7 @@ export class PlayQueuesController {
 		const directPlay = process.env.ALLOW_DIRECT_PLAY === 'true';
 
 		query.path = localItem.key
+		if (query.videoResolution === '') query.videoResolution = '1080x1080'
 
 		await this.pmsService.plexServerApi(req.path, {
 			method: 'GET',

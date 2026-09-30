@@ -25,20 +25,7 @@ export class PMSService implements OnModuleInit {
 			const plexToken = options?.query?.['X-Plex-Token'] || options?.query?.['x-plex-token'];
 			options.query = {
 				...normalizeQueryParams(options.query),
-				'X-Plex-Product': 'Plex Web',
-				'X-Plex-Version': '4.159.0',
-				'X-Plex-Client-Identifier': 'ubmn93amq1bg3zb2as6le4oe',
-				'X-Plex-Platform': 'Chrome',
-				'X-Plex-Platform-Version': '146.0',
-				'X-Plex-Features': 'external-media,indirect-media,hub-style-list',
-				'X-Plex-Model': 'standalone',
-				'X-Plex-Device': 'Windows',
-				'X-Plex-Token': plexToken ? plexToken : process.env.PLEX_TOKEN,
-				'X-Plex-Device-Screen-Resolution': '1055x1066,2195x1235',
-				'X-Plex-Provider-Version': '7.2',
-				'X-Plex-Text-Format': 'plain',
-				'X-Plex-Drm': 'widevine',
-				'X-Plex-Language': 'en',
+				'X-Plex-Token': plexToken ? plexToken : process.env.PLEX_TOKEN
 			};
 		},
 	});
