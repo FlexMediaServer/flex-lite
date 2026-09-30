@@ -193,6 +193,8 @@ export class PlayQueuesController {
 		if (!localItem) return new NotFoundException()
 
 		query.path = localItem.key
+		query.key = localItem.key
+		query.guid = item.guid
 		query.ratingKey = localItem.key.split('/').pop()
 
 		return await this.pmsService.plexServerApi('/:/timeline', {
@@ -239,15 +241,17 @@ export class PlayQueuesController {
 		let item = await this.metadataService.getItem(itemId)
 		if (!item) throw new NotFoundException()
 		let localItem = await this.pmsService.resolveLocalItem(item);
-		if (!localItem) {
-			const stream = await this.stremioService.resolveStream(item);
-			if (!stream || !stream?.url) throw new NotFoundException()
-			const path = await this.pmsService.addStream(item, stream?.url)
-			localItem = await this.pmsService.resolveLocalItem(item);
-		}
 		if (!localItem || localItem.Media?.[0] === undefined) throw new NotFoundException()
 
 		const directPlay = process.env.ALLOW_DIRECT_PLAY === 'true';
+
+		query.path = localItem.key
+
+		await this.pmsService.plexServerApi(req.path, {
+			method: 'GET',
+			query,
+			headers
+		})
 
 		return {
 			MediaContainer: new MediaContainer({
@@ -291,19 +295,23 @@ export class PlayQueuesController {
 	async start(@Req() req: any, @Res() res: any, @Query() query: any, @Headers() headers: any) {
 		const itemId = query.path.split('/').pop()
 		let item = await this.metadataService.getItem(itemId)
-		if (!item) throw new NotFoundException()
+		if (!item) throw new NotFoundException('Plex metadata item not found')
 
 		let localItem = await this.pmsService.resolveLocalItem(item);
-		if (!localItem) {
-			const stream = await this.stremioService.resolveStream(item);
-			if (!stream || !stream?.url) throw new NotFoundException()
-			const path = await this.pmsService.addStream(item, stream?.url)
-			localItem = await this.pmsService.resolveLocalItem(item);
-		}
-		if (!localItem) throw new NotFoundException()
+		console.log(localItem, item)
+		if (!localItem) throw new NotFoundException('Local item not found')
 
+		// const newQuery: any = {}
 		query.path = localItem.key
-		query.location = 'lan' //To prevent Plex from limiting transcode quality to 480p
+		// newQuery.protocol = query.protocol
+		// query.location = 'lan' //To prevent Plex from limiting transcode quality to 480p
+		// query.session = Date.now().toString(36) + Math.random().toString(36).substring(2);
+		// query['X-Plex-Playback-Id'] = undefined;
+		// query['X-Plex-Playback-Session-Id'] = undefined;
+		// query['X-Plex-Session-Id'] = undefined;
+		// query['X-Plex-Session-Identifier'] = undefined;
+		// newQuery['X-Plex-Client-Identifier'] = Date.now().toString(36) + Math.random().toString(36).substring(2);
+		// console.log(newQuery)
 		// query.session = undefined;
 		// query['X-Plex-Session-Id'.toLowerCase()] = undefined;
 		// query['X-Plex-Playback-Session-Id'.toLowerCase()] = undefined;
