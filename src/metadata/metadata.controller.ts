@@ -11,6 +11,7 @@ import { Client } from '../middleware/client.decorator.js';
 import { ClientType } from '../middleware/client-identifier.middleware.js';
 import { StremioService } from '../stremio/stremio.service.js';
 import { cache } from '../utils/database.js';
+import { Hub } from '../dto/Hub.entity.js';
 
 const isNumeric = (val: any) => val !== '' && val !== null && Number.isFinite(Number(val));
 
@@ -79,9 +80,9 @@ export class MetadataController {
 		
 		//Forces stream resolution. This fixes an issue that prevents playback from starting when going to next item in play queue. Currently only targets web, however some other clients may need this enabled as well.
 		if (clientType === ClientType.WEB && query['X-Plex-Playback-Id'] && (metadata.type === 'episode' || metadata.type === 'movie')) {
-			const stream = await this.stremioService.resolveStream(metadata);
-			if (!stream || !stream?.url) throw new NotFoundException()
-			await this.pmsService.addStream(metadata, stream?.url)
+			// const stream = await this.stremioService.resolveStream(metadata);
+			// if (!stream || !stream?.url) throw new NotFoundException()
+			// await this.pmsService.addStream(metadata, stream?.url)
 		}
 
 		const localItem = await this.pmsService.resolveLocalItem(metadata);
@@ -188,18 +189,59 @@ export class MetadataController {
 		}
 	}
 
-	// @Get('/hubs/metadata/:library/:id/related')
-	// relatedHubs() {
-	// 	return {
-	// 		MediaContainer: new MediaContainer({
-	// 			identifier: 'com.plexapp.plugins.library',
-	// 			librarySectionID: 2,
-	// 			allowSync: true,
-	// 			totalSize: 0,
-	// 			offset: 0,
-	// 		})
-	// 	}
-	// }
+	//Define hubs for user's homepage
+	@Get(['/hubs/promoted', '/hubs', '/hubs/sections/:library'])
+	promoted(
+		@Query() query: {
+			contentDirectoryID: string;
+			pinnedContentDirectoryID: string; //Split by comma
+		},
+		@IsXML() isXML: boolean,
+	) {
+		if (query.pinnedContentDirectoryID && query.contentDirectoryID) {
+			const pinnedLibraries = query.pinnedContentDirectoryID.split(',');
+			if (query.contentDirectoryID !== pinnedLibraries[0] && query.contentDirectoryID !== query.pinnedContentDirectoryID) return;
+		}
+
+		return {
+			MediaContainer: new MediaContainer({
+				identifier: 'com.plexapp.plugins.library',
+				allowSync: true,
+				Hub: this.metadataService.hubs.map((hub) => {
+					const result = new Hub({ ...hub });
+
+					if (result.Metadata !== undefined) {
+						const metadata = result.Metadata?.slice(0, 10).map(item => {
+							delete item.Rating;
+							delete (item as Metadata & { Actor: any }).Actor;
+							delete (item as Metadata & { Collection: any }).Collection;
+							delete (item as Metadata & { Country: any }).Country;
+							delete (item as Metadata & { Label: any }).Label;
+							delete (item as Metadata & { Mood: any }).Mood;
+							delete (item as Metadata & { Part: any }).Part;
+							delete (item as Metadata & { Producer: any }).Producer;
+							delete (item as Metadata & { Similar: any }).Similar;
+							delete (item as Metadata & { Photo: any }).Photo;
+							return item
+						}) ?? [];
+
+						if (result.Metadata.length > 10) {
+							result.more = true;
+						}
+
+						if (isXML) {
+							delete result.Metadata;
+							result.Video = metadata
+						} else {
+							result.Metadata = metadata
+						}
+					}
+
+					return result;
+				})
+			})
+		}
+	}
 
 	@Get(['/library/metadata/*path'])
 	async nestedMeta(@Req() req: Request) {

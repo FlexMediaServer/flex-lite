@@ -3,11 +3,14 @@ import { normalizeQueryParams } from '../utils/request-values.js';
 import { ofetch, type $Fetch } from 'ofetch';
 import { cache } from '../utils/database.js';
 import { Metadata } from '../dto/Metadata.entity.js';
+import { Hub } from '../dto/Hub.entity.js';
 
 @Injectable()
 export class MetadataService {
 
 	authToken = process.env.PLEX_TOKEN
+
+	public hubs: Hub[] = [];
 
 	public discoverApi: $Fetch = ofetch.create({
 		baseURL: 'https://discover.provider.plex.tv',

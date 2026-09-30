@@ -48,14 +48,6 @@ export class PMSService implements OnModuleInit {
 		},
 	});
 
-	socket = new WebSocket(this.websocketUri())
-
-	websocketUri () {
-		const url = new URL(this.endpoint);
-		const wsProtocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-		return `${wsProtocol}//${url.host}/:/websockets/notifications?X-Plex-Token=${process.env.PLEX_TOKEN}`;
-	}
-
 	mountPath = '/data'
 
 	localItems = new Map<string, string>()
@@ -66,49 +58,6 @@ export class PMSService implements OnModuleInit {
 	}
 
 	constructor (private webdavService: WebdavService, private metadataService: MetadataService, private stremioService: StremioService) {
-		this.socket.addEventListener('message', async event => {
-			try {
-				const payload = JSON.parse(event.data);
-				const ActivityNotification = payload.NotificationContainer?.ActivityNotification?.find((an: any) => an.event === 'ended' && an.Activity.type === 'library.refresh.items')
-
-				// console.log(util.inspect(payload, { depth: null, colors: true }));
-
-				// if (ActivityNotification && ActivityNotification?.Activity?.Context?.key) {
-				// 	// console.log(ActivityNotification?.Activity)
-				// 	if (ActivityNotification?.Activity?.Context.key.endsWith('/children') || ActivityNotification?.Activity.title === 'Refreshing') return null;
-				// 	let item = await this.plexServerApi(`${ActivityNotification?.Activity?.Context.key}`, {
-				// 		method: 'GET',
-				// 	})
-
-				// 	const { guid, key } = item.MediaContainer?.Metadata?.[0];
-
-				// 	console.log('MEDIA IMPORTED (Activity):', guid, key, ActivityNotification?.Activity)
-
-				// 	this.eventBus.emit(`imported:${guid?.split('/').pop()}`, key.split('/').pop())
-				// }
-
-				const timelineEntry = payload.NotificationContainer?.TimelineEntry?.[0];
-				//type = 4: Episode
-				//type = 1: Movie
-				if ((timelineEntry?.state === 5) && (timelineEntry.type === 4 ||  timelineEntry.type === 1)) {
-					let item = await this.plexServerApi(`/library/metadata/${timelineEntry.itemID}`, {
-						method: 'GET',
-					})
-
-					const { guid, key } = item.MediaContainer?.Metadata?.[0];
-
-					console.log('MEDIA IMPORTED (Timeline):', guid, key, timelineEntry)
-
-					this.eventBus.emit(`imported:${guid?.split('/').pop()}`, key.split('/').pop())
-				}
-				// console.log(util.inspect(payload, { depth: null, colors: true }));
-			} catch (e) {
-				console.error(e);
-			}
-		});
-		this.socket.addEventListener('open', event => {
-			console.log('WebSocket connection established!');
-		});
 	}
 
 	async onModuleInit () {}
@@ -173,40 +122,51 @@ export class PMSService implements OnModuleInit {
 
 	async addStream(item: Metadata, url: string) {
 		// Sanitize title segments to remove illegal Windows characters
-		const showTitle = this.sanitizePathSegment(item.grandparentTitle || item.parentTitle || 'Unknown').replaceAll('.', '');
-		const seasonNum = item.parentIndex?.toString() ?? '0';
-		const episodeNum = item.index?.toString() ?? '0';
-		const movieTitle = this.sanitizePathSegment(item.title || 'Unknown').replaceAll('.', '');
-
-		// Construct safe path
-		const filePath = item.type === 'episode' 
-			? `Shows/${showTitle}/Season ${seasonNum}/S${seasonNum}E${episodeNum}/S${seasonNum}E${episodeNum} [${(Math.random() + 1).toString(36).substring(2)}].mkv` 
-			: `Movies/${movieTitle} (${item.year})/${movieTitle} (${item.year}).mkv`;
-		
-		await this.webdavService.addFile(filePath, url);
-
+		// const showTitle = this.sanitizePathSegment(item.grandparentTitle || item.parentTitle || 'Unknown').replaceAll('.', '');
+		// const seasonNum = item.parentIndex?.toString() ?? '0';
+		// const episodeNum = item.index?.toString() ?? '0';
+		// const movieTitle = this.sanitizePathSegment(item.title || 'Unknown').replaceAll('.', '');
 		const guid = item.guid?.split('/').pop();
 		if (!guid) return null; //Should throw an exception
 
-		let itemId = (await db.selectFrom('item_mappings').select('item_id').where('guid', '=', guid).executeTakeFirst())?.item_id;
-		
-		await new Promise(resolve => setTimeout(resolve, 2000)); //Wait 2 seconds to allow rclone mount to update
+		let itemMapping = (await db.selectFrom('item_mappings').selectAll().where('guid', '=', guid).executeTakeFirst());
+		let itemMappingId;
 
-		await this.refreshPath(item, filePath);
+		if (!itemMapping) {
+			let metadataItem = (await this.plexServerApi('/library/file', {
+				method: 'POST',
+				query: {
+					url,
+					computeHashes: 0,
+					ingestNonMatches: 1
+				}
+			})).MediaContainer.Metadata[0] as Metadata
 
-		itemId = await new Promise<string>((resolve, reject) => {
-			this.eventBus.once(`imported:${guid}`, (id) => {
-				resolve(id)
-			})
-		})
+			// await this.plexServerApi(`${metadataItem.key}/match`, {
+			// 	method: 'PUT',
+			// 	query: {
+			// 		guid: item.guid,
+			// 		name: item.title
+			// 	}
+			// })
 
-		await db
-			.insertInto('item_mappings')
-			.values({ guid: guid, item_id: itemId as string })
-			.onConflict((oc) => 
-				oc.column('guid').doUpdateSet({ item_id: itemId })
-			).execute();
+			let m = metadataItem?.key.split('/').pop();
+			itemMappingId = m
 
-		return itemId;
+			await db
+				.insertInto('item_mappings')
+				.values({ guid: guid, item_id: m as string })
+				.onConflict((oc) => 
+					oc.column('guid').doUpdateSet({ item_id: m })
+				).execute();
+
+			this.eventBus.emit(`imported:${guid}`, itemMappingId)
+		} else {
+			itemMappingId = itemMapping.item_id
+			this.eventBus.emit(`imported:${guid}`, itemMapping.item_id)
+		}
+
+
+		return itemMappingId;
 	}
 }
