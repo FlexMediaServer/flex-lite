@@ -2,7 +2,6 @@ import { MiddlewareConsumer, Module } from '@nestjs/common';
 import { createObserveModule } from '@nestjs/observe';
 import { AppController } from './app.controller.js';
 import { AppService } from './app.service.js';
-import { WebdavModule } from './webdav/webdav.module.js';
 import { LoggerMiddleware } from './middleware/logger.middleware.js';
 import { ProvidersModule } from './providers/providers.module.js';
 import { MetadataModule } from './metadata/metadata.module.js';
@@ -23,7 +22,6 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
     //   appSecret: 'YOUR_APP_SECRET',
     //   serviceId: 'flex-lite',
     // }),
-    WebdavModule,
     ProvidersModule,
     MetadataModule,
     PlayQueuesModule,

@@ -4,7 +4,6 @@ import { PlayQueuesQuery } from './play-queues.dto.js';
 import { parseKey } from '../utils/generic.js';
 import { MetadataService } from '../metadata/metadata.service.js';
 import { StremioService } from '../stremio/stremio.service.js';
-import { WebdavService } from '../webdav/webdav.service.js';
 import { PMSService } from '../plex/plex.service.js';
 import { PlayQueuesService } from './play-queues.service.js';
 import { Metadata } from '../dto/Metadata.entity.js';
