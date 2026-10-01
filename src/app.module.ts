@@ -30,6 +30,7 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
   ],
   controllers: [AppController],
   providers: [AppService],
+  exports: [AppService],
 })
 export class AppModule {
 	configure(consumer: MiddlewareConsumer) {
