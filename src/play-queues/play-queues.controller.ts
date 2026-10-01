@@ -11,11 +11,12 @@ import { emptyMedia, serializePlayQueues } from '../utils/plex.js';
 import { Readable } from 'node:stream';
 import { MediaContainer } from '../dto/MediaContainer.entity.js';
 import { IsXML } from '../is-xml.decorator.js';
+import { AppService } from '../app.service.js';
 
 @Controller()
 export class PlayQueuesController {
 	constructor(
-		// appService: AppService,
+		private appService: AppService,
 		private metadataService: MetadataService,
 		private stremioService: StremioService,
 		private pmsService: PMSService,
@@ -93,10 +94,9 @@ export class PlayQueuesController {
 
 		const currentIndex = playQueue.items?.findIndex((item) => item.ratingKey == playQueue.currentItem);
 		const currentItemObj = playQueue.items[currentIndex];
-		const stream = await this.stremioService.resolveStream(currentItemObj);
-		if (!stream || !stream?.url) throw new NotFoundException()
 
-		const itemPath = await this.pmsService.addStream(item, stream?.url)
+		const itemPath = await this.appService.resolveMedia(currentItemObj);
+		if (!itemPath) throw new NotFoundException()
 
 		for (let item of playQueue.items) {
 			let localItem = await this.pmsService.resolveLocalItem(item)
@@ -126,9 +126,7 @@ export class PlayQueuesController {
 		if (!item) throw new NotFoundException()
 		let localItem = await this.pmsService.resolveLocalItem(item);
 		if (!localItem) {
-			const stream = await this.stremioService.resolveStream(item);
-			if (!stream || !stream?.url) throw new NotFoundException()
-			const path = await this.pmsService.addStream(item, stream?.url)
+			const path = await this.appService.resolveMedia(item);
 			localItem = await this.pmsService.resolveLocalItem(item);
 		}
 		if (!localItem) throw new NotFoundException()
@@ -224,7 +222,7 @@ export class PlayQueuesController {
 
 		query.key = localItem.key.split('/').pop()
 
-		console.log(query)
+		// console.log(query)
 
 		return await this.pmsService.plexServerApi('/:/scrobble', {
 			method: 'GET',
@@ -298,7 +296,6 @@ export class PlayQueuesController {
 		if (!item) throw new NotFoundException('Plex metadata item not found')
 
 		let localItem = await this.pmsService.resolveLocalItem(item);
-		console.log(localItem, item)
 		if (!localItem) throw new NotFoundException('Local item not found')
 
 		// const newQuery: any = {}

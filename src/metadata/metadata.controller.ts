@@ -12,6 +12,7 @@ import { ClientType } from '../middleware/client-identifier.middleware.js';
 import { StremioService } from '../stremio/stremio.service.js';
 import { cache } from '../utils/database.js';
 import { Hub } from '../dto/Hub.entity.js';
+import { AppService } from '../app.service.js';
 
 const isNumeric = (val: any) => val !== '' && val !== null && Number.isFinite(Number(val));
 
@@ -25,6 +26,7 @@ export type DiscoverSearchResult = {
 @Controller()
 export class MetadataController {
 	constructor(
+		private appService: AppService,
 		private readonly metadataService: MetadataService,
 		private readonly stremioService: StremioService,
 		private readonly pmsService: PMSService,
@@ -80,9 +82,8 @@ export class MetadataController {
 		
 		//Forces stream resolution. This fixes an issue that prevents playback from starting when going to next item in play queue. Currently only targets web, however some other clients may need this enabled as well.
 		if (clientType === ClientType.WEB && query['X-Plex-Playback-Id'] && (metadata.type === 'episode' || metadata.type === 'movie')) {
-			// const stream = await this.stremioService.resolveStream(metadata);
-			// if (!stream || !stream?.url) throw new NotFoundException()
-			// await this.pmsService.addStream(metadata, stream?.url)
+			const itemPath = await this.appService.resolveMedia(metadata);
+			if (!itemPath) throw new NotFoundException()
 		}
 
 		const localItem = await this.pmsService.resolveLocalItem(metadata);
