@@ -28,8 +28,9 @@ export async function up(db: Kysely<any>): Promise<void> {
 				col.primaryKey().defaultTo(dialect === 'postgres' ? sql`((random() * 2147483647)::int)` : sql`(random() & 2147483647)`)
 			)
 			.addColumn('playbackSessionId', 'text', (col) => col.notNull()) //User ID
-			.addColumn('currentItem', 'text', (col) => col.notNull()) //Library ID
-			.addColumn('items', 'jsonb', (col) => col.notNull())
+			.addColumn('currentItem', 'text', (col) => col.notNull()) //GUID of the currently playing item
+			.addColumn('item', 'text', (col) => col.notNull()) //Show or movie Plex GUID (plex://show/<id> | plex://movie/<id>)
+			.addColumn('offset', 'integer', (col) => col.notNull().defaultTo(0)) //Internal, client-invisible offset into the episode list
 			.addColumn('updated_at', 'integer', (col) =>
 				dialect === 'postgres' ? col.defaultTo(sql`EXTRACT(EPOCH FROM now())::integer`) : col.defaultTo(sql`(strftime('%s', 'now'))`),
 			)

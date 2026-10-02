@@ -112,8 +112,8 @@ export class MetadataService {
 	}
 
 
-	async getItemGrandchildren(id: string, limit = 100, offset = 0): Promise<Metadata[] | null> {
-		const result = await this.discoverApi<{ MediaContainer?: { Metadata?: Metadata[] } }>(
+	async getItemGrandchildren(id: string, limit = 100, offset = 0): Promise<{ metadata: Metadata[]; totalSize: number } | null> {
+		const result = await this.discoverApi<{ MediaContainer?: { Metadata?: Metadata[]; totalSize?: number } }>(
 			`/library/metadata/${id}/grandchildren`,
 			{
 				query: {
@@ -134,6 +134,9 @@ export class MetadataService {
 			}
 		}
 
-		return result?.MediaContainer?.Metadata as Metadata[];
+		return {
+			metadata: (result?.MediaContainer?.Metadata ?? []) as Metadata[],
+			totalSize: result?.MediaContainer?.totalSize ?? 0,
+		};
 	}
 }
