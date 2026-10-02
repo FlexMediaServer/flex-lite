@@ -75,10 +75,34 @@ export class MetadataController {
 		};
 	}
 
+	@Get('/library/metadata/:id/subtitles')
+	async subtitles (@Param() params: any, @Headers() headers: any, @Query() query: any) {
+		let metadata = await this.metadataService.getItem(params.id);
+		if (!metadata) throw new NotFoundException();
+
+		const localItem = await this.pmsService.resolveLocalItem(metadata);
+		if (!localItem) throw new NotFoundException();
+
+		query['X-Plex-Playback-Session-Id'] = undefined;
+		query['X-Plex-Playback-Id'] = undefined;
+
+		return await this.pmsService.plexServerApi(`/library/metadata/${localItem.ratingKey}/subtitles`, {
+			method: 'GET',
+			query,
+			headers
+		})
+	}
+
 	@Get('/library/metadata/:id')
 	async metadata(@Headers() headers: any, @Query() query: any, @Param() params: any, @IsXML() isXML: boolean, @Client() clientType: ClientType) {
 		let metadata = await this.metadataService.getItem(params.id);
 		if (!metadata) throw new NotFoundException();
+
+		const token = query['X-Plex-Token'];
+
+		console.log(query, token)
+
+		console.log(await this.pmsService.getUser(query['X-Plex-Token']));
 		
 		//Forces stream resolution. This fixes an issue that prevents playback from starting when going to next item in play queue. Currently only targets web, however some other clients may need this enabled as well.
 		if (clientType === ClientType.WEB && query['X-Plex-Playback-Id'] && (metadata.type === 'episode' || metadata.type === 'movie')) {

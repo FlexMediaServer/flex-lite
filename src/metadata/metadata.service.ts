@@ -86,13 +86,40 @@ export class MetadataService {
 		return item;
 	}
 
-	async getItemChildren(id: string): Promise<Metadata[] | null> {
+	async getItemChildren(id: string, limit = 100, offset = 0): Promise<Metadata[] | null> {
 		const result = await this.discoverApi<{ MediaContainer?: { Metadata?: Metadata[] } }>(
 			`/library/metadata/${id}/children`,
 			{
 				query: {
 					excludeAllLeaves: 1,
-					'X-Plex-Container-Size': 100,
+					'X-Plex-Container-Size': limit,
+					'X-Plex-Container-Start': offset
+				},
+			},
+		);
+
+		if (!result) return null;
+
+		if (result?.MediaContainer?.Metadata) {
+			for (const item of result?.MediaContainer?.Metadata) {
+				if (item.Media) {
+					delete item.Media;
+				}
+			}
+		}
+
+		return result?.MediaContainer?.Metadata as Metadata[];
+	}
+
+
+	async getItemGrandchildren(id: string, limit = 100, offset = 0): Promise<Metadata[] | null> {
+		const result = await this.discoverApi<{ MediaContainer?: { Metadata?: Metadata[] } }>(
+			`/library/metadata/${id}/grandchildren`,
+			{
+				query: {
+					excludeAllLeaves: 1,
+					'X-Plex-Container-Size': limit,
+					'X-Plex-Container-Start': offset
 				},
 			},
 		);

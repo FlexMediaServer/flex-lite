@@ -44,6 +44,24 @@ export class PMSService implements OnModuleInit {
 
 	async onModuleInit() {}
 
+	users: any = {};
+
+	async getUser (token: string) {
+		let user = this.users[token]
+
+		if (!user) {
+			user = await ofetch('https://plex.tv/api/v2/user', {
+				headers: {
+					Accept: 'application/json',
+					'X-Plex-Token': token
+				}
+			});
+			this.users[token] = user;
+		}
+
+		return user
+	}
+
 	async refreshPath(metadata: Metadata, folder: string) {
 		const folderPath = path.dirname(path.join(this.mountPath, folder)).replaceAll('\\', '/');
 
