@@ -34,7 +34,6 @@ export class PlayQueuesController {
 		// @IsXML() isXML,
 	) {
 		const parsedPath = parseKey(query.key ? query.key : decodeURIComponent(new URL(query.uri).pathname));
-
 		const item = await this.metadataService.getItem(parsedPath.itemId) as Metadata;
 
 		const playbackSessionId =
@@ -287,7 +286,7 @@ export class PlayQueuesController {
 	@Get([
 		'/video/:id/transcode/universal/start.mpd',
 		'/video/:id/transcode/universal/start.m3u8',
-		'/video/:id/transcode/universal/start.mkv',
+		'/video/:id/transcode/universal/start.mkv', //TODO properly proxy this as a stream
 		'/video/:id/transcode/universal/start',
 	])
 	async start(@Req() req: any, @Res() res: any, @Query() query: any, @Headers() headers: any) {
