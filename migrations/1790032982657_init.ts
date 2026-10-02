@@ -42,7 +42,7 @@ export async function up(db: Kysely<any>): Promise<void> {
 		await trx.schema
 			.createIndex('play_queues_idx')
 			.on('play_queues')
-			.columns(['id', 'playbackSessionId', 'currentItem'])
+			.columns(['id', 'playbackSessionId'])
 			.execute();
 	})
 }

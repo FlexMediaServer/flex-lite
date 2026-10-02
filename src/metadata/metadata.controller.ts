@@ -1,4 +1,4 @@
-import { Controller, Get, NotFoundException, Param, Query, Req, UseGuards, Headers } from '@nestjs/common';
+import { Controller, Get, NotFoundException, Param, Query, Req, UseGuards, Headers, BadRequestException } from '@nestjs/common';
 import type { Request } from 'express';
 import { MediaContainer } from '../dto/MediaContainer.entity.js';
 import { IsXML } from '../is-xml.decorator.js';
@@ -75,6 +75,42 @@ export class MetadataController {
 		};
 	}
 
+	@Get('/library/all')
+	async libraryAll(@Query() query: any) {
+		let item;
+		if (query['show.guid']) {
+			const showGuid = query['show.guid'].split('/').pop();
+			if (!showGuid) throw new BadRequestException('show.guid is invalid');
+
+			const seasons = await this.metadataService.getItemChildren(showGuid);
+			if (!seasons) throw new NotFoundException();
+			const seasonIndex = Number.parseInt(query['season.index'] || '', 10);
+
+			item = seasons.find((season: any) => season.index === seasonIndex);
+		} else {
+			const guid = query.guid?.split('/').pop();
+			if (!guid) throw new BadRequestException('guid is required');
+
+			item = await this.metadataService.getItem(guid);
+		}
+
+		if (!item) throw new NotFoundException();
+		const metadata = new Metadata(item);
+
+		metadata.librarySectionTitle = 'Flex';
+		metadata.librarySectionID = 2;
+		metadata.librarySectionKey = '/library/sections/2';
+
+		return {
+			MediaContainer: new MediaContainer({
+				identifier: 'com.plexapp.plugins.library',
+				librarySectionID: 2,
+				allowSync: false,
+				Metadata: [metadata].filter((item) => item),
+			})
+		}
+	}
+
 	@Get('/library/metadata/:id/subtitles')
 	async subtitles (@Param() params: any, @Headers() headers: any, @Query() query: any) {
 		let metadata = await this.metadataService.getItem(params.id);
@@ -98,14 +134,15 @@ export class MetadataController {
 		let metadata = await this.metadataService.getItem(params.id);
 		if (!metadata) throw new NotFoundException();
 
-		const token = query['X-Plex-Token'];
+		// const token = query['X-Plex-Token'];
 
-		console.log(query, token)
+		// console.log(query, token)
 
-		console.log(await this.pmsService.getUser(query['X-Plex-Token']));
+		// console.log(await this.pmsService.getUser(query['X-Plex-Token']));
 		
-		//Forces stream resolution. This fixes an issue that prevents playback from starting when going to next item in play queue. Currently only targets web, however some other clients may need this enabled as well.
-		if (clientType === ClientType.WEB && query['X-Plex-Playback-Id'] && (metadata.type === 'episode' || metadata.type === 'movie')) {
+		//Forces stream resolution. This fixes an issue that prevents playback from starting when going to next item in play queue. Currently only targets web and roku, however some other clients may need this enabled as well.
+		console.log(headers, query)
+		if (((clientType === ClientType.ROKU && headers['x-plex-playback-session-id']) || clientType === ClientType.WEB && query['X-Plex-Playback-Id']) && (metadata.type === 'episode' || metadata.type === 'movie')) {
 			const itemPath = await this.appService.resolveMedia(metadata);
 			if (!itemPath) throw new NotFoundException()
 		}
