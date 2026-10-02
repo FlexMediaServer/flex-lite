@@ -24,8 +24,6 @@ export class PlayQueuesController {
 		private playQueuesService: PlayQueuesService,
 	) {}
 
-	//TODO: If series, make this solely use /grandchildren endpoint on Plex Discover to get all episodes of a series and paginate. Only store playQueue ID and currentItem ID. Cache results
-
 	@Post(['/playQueues'])
 	async playQueues(
 		@Query() query: any,
@@ -42,112 +40,103 @@ export class PlayQueuesController {
 			headers['x-plex-session-id'] ||
 			query['x-plex-session-id'];
 
-		let nextMetadata: Metadata[] = [];
+		// Only the show/movie GUID, current item GUID and internal offset are stored.
+		// Episode lists are fetched live from the Plex Discover /grandchildren endpoint.
+		let show: string | undefined;
 		let currentItem: string | undefined;
+		let offset = 0;
 
-		if (item.type == 'show') {
-			// start at S1E1 and include next episodes
-			const seasons = await this.metadataService.getItemChildren(item?.ratingKey as string); //Get seasons of a show
-			nextMetadata = await this.metadataService.getItemChildren(seasons?.[0].ratingKey as string) as Metadata[]; //Get episodes of the first season of the show
-			currentItem = nextMetadata.find((episode: Metadata) => episode.index == 1)?.ratingKey as string;
+		if (item.type == 'show' || item.type == 'movie') {
+			show = item.guid ?? `plex://${item.type}/${item.ratingKey}`;
+			offset = 0;
 
-			if (!currentItem) {
-				currentItem = nextMetadata[0].ratingKey;
-			}
+			const window = await this.playQueuesService.fetchWindow({ playbackSessionId, item: show, currentItem: '', offset });
+			currentItem = window.items[0]?.guid;
 		} else if (item.type == 'season') {
-			// start at episode 1 of the season and include next episodes
-			nextMetadata = await this.metadataService.getItemChildren(item.ratingKey) as Metadata[]; //Gets season's episodes to populate play queue.
+			// Start at episode 1 of the season: offset = total episodes of all previous seasons
+			show = `plex://show/${item.parentRatingKey}`;
 
-			currentItem = nextMetadata.find((episode: Metadata) => episode.index == item.index)?.ratingKey as string;
-
-			if (!currentItem) {
-				currentItem = nextMetadata[0].ratingKey;
+			const seasons = ((await this.metadataService.getItemChildren(item.parentRatingKey)) ?? []).sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+			for (const season of seasons) {
+				if ((season.index ?? 0) >= (item.index ?? 0)) break;
+				offset += season.leafCount ?? 0;
 			}
+
+			const window = await this.playQueuesService.fetchWindow({ playbackSessionId, item: show, currentItem: '', offset });
+			currentItem = window.items[0]?.guid;
 		} else if (item.type == 'episode') {
-			// return the current episode and next episodes
-			nextMetadata = await this.metadataService.getItemChildren(item.parentRatingKey) as Metadata[]; //Gets full season episodes to populate play queue.
-
-			currentItem = nextMetadata.find((episode: Metadata) => episode.ratingKey == item.ratingKey)?.ratingKey as string;
-
-			if (!currentItem) {
-				currentItem = nextMetadata[0].ratingKey;
-			}
-		} else if (item.type == 'movie') {
-			// return just the current media
-			nextMetadata = [item];
-
-			currentItem = item.ratingKey;
+			// Offset = total episodes of all previous seasons + the episode's position in its season
+			const computed = await this.playQueuesService.computeOffset(item.ratingKey);
+			show = computed.item;
+			currentItem = computed.currentItem;
+			offset = computed.offset;
 		}
 
 		if (!currentItem) {
 			throw new NotFoundException('Could not determine current item for play queue');
 		}
 
-		let playQueue = await this.playQueuesService.setPlayQueue(randomInt(0, 1_000_000), {
-			currentItem, // todo
-			items: nextMetadata,
+		const playQueue = await this.playQueuesService.setPlayQueue(randomInt(0, 1_000_000), {
 			playbackSessionId,
+			item: show as string,
+			currentItem,
+			offset,
 		});
 
 		console.debug(`Play queue created... ${playQueue.id}`);
 
-		const currentIndex = playQueue.items?.findIndex((item) => item.ratingKey == playQueue.currentItem);
-		const currentItemObj = playQueue.items[currentIndex];
+		const window = await this.playQueuesService.fetchWindow(playQueue);
+		const currentRatingKey = currentItem.split('/').pop();
+		const currentItemObj = window.items.find((entry: any) => entry.guid === currentItem || entry.ratingKey === currentRatingKey) as Metadata;
 
 		const itemPath = await this.appService.resolveMedia(currentItemObj);
-		if (!itemPath) throw new NotFoundException()
+		if (!itemPath) throw new NotFoundException();
 
-		for (let item of playQueue.items) {
-			let localItem = await this.pmsService.resolveLocalItem(item)
-			if (localItem && localItem.Media?.[0]) {
-				item.Media = [localItem.Media[0]]
+		for (const windowItem of window.items) {
+			if (windowItem === currentItemObj) {
+				const localItem = await this.pmsService.resolveLocalItem(windowItem);
+				windowItem.Media = localItem?.Media?.[0] ? [localItem.Media[0]] : (emptyMedia() as any);
 			} else {
-				item.Media = emptyMedia() as any
+				windowItem.Media = emptyMedia() as any;
 			}
 		}
 
-		// playQueue.items = playQueue.items.slice(currentIndex, currentIndex+100)
-
-		return serializePlayQueues(playQueue, false);
+		return serializePlayQueues(playQueue, window, false);
 	}
 
 	@Get(['/playQueues/:id'])
 	async getPlayQueues(@Param('id') playQueueId: any, @Query('center') center: any) {
-		const playQueue = await this.playQueuesService.getPlayQueue(playQueueId);
+		let playQueue = await this.playQueuesService.getPlayQueue(playQueueId);
 		if (!playQueue) return new NotFoundException();
 
-		// if (center !== undefined) await this.playQueuesService.selectIndex(playQueue.id, parseInt(center));
+		//Required for some older clients, this is mainly done using /playQueues/:id?center=<play queue item id>
+		if (center !== undefined) await this.playQueuesService.selectItem(playQueue.id as number, center);
 
-		//Fetch play queue again for updated index information
-		// playQueue = await this.playQueuesService.getPlayQueue(playQueueId);
+		//Fetch play queue again for updated offset information
+		playQueue = await this.playQueuesService.getPlayQueue(playQueueId);
+		if (!playQueue) return new NotFoundException();
 
-		let item = await this.metadataService.getItem(playQueue.currentItem);
-		if (!item) throw new NotFoundException()
-		let localItem = await this.pmsService.resolveLocalItem(item);
+		const window = await this.playQueuesService.fetchWindow(playQueue);
+		const currentRatingKey = playQueue.currentItem.split('/').pop();
+		const currentItem = window.items.find((entry: any) => entry.guid === playQueue.currentItem || entry.ratingKey === currentRatingKey) as Metadata;
+		if (!currentItem) throw new NotFoundException();
+
+		let localItem = await this.pmsService.resolveLocalItem(currentItem);
 		if (!localItem) {
-			const path = await this.appService.resolveMedia(item);
-			localItem = await this.pmsService.resolveLocalItem(item);
+			await this.appService.resolveMedia(currentItem);
+			localItem = await this.pmsService.resolveLocalItem(currentItem);
 		}
-		if (!localItem) throw new NotFoundException()
+		if (!localItem) throw new NotFoundException();
 
-
-		const currentIndex = playQueue.items.findIndex((item) => item.ratingKey == playQueue.currentItem);
-		const currentItem = playQueue.items[currentIndex];
-
-		for (let item of playQueue.items) {
-			item.Media = emptyMedia() as any
-		}		
-
-		let currentLocalItem = await this.pmsService.resolveLocalItem(item)
-		if (currentLocalItem && currentLocalItem.Media?.[0]) {
-			currentItem.Media = [currentLocalItem.Media[0]]
-		} else {
-			currentItem.Media = emptyMedia() as any
+		for (const windowItem of window.items) {
+			windowItem.Media = emptyMedia() as any;
 		}
 
-		// playQueue.items = playQueue.items.slice(currentIndex, currentIndex+100)
+		if (localItem?.Media?.[0]) {
+			currentItem.Media = [localItem.Media[0]];
+		}
 
-		return serializePlayQueues(playQueue, false);
+		return serializePlayQueues(playQueue, window, false);
 	}
 
 	@Get('/library/metadata/:id/userState')
@@ -179,7 +168,8 @@ export class PlayQueuesController {
 		if (!item) throw new NotFoundException()
 
 		if (playQueue) {
-			if (playQueue.currentItem !== query.playQueueItemID) {
+			const currentRatingKey = playQueue.currentItem.split('/').pop();
+			if (currentRatingKey !== query.playQueueItemID) {
 				// //Required for some older clients, this is mainly done using /playQueues/:id?center=<play queue item id>
 				await this.playQueuesService.selectItem(playQueue.id as number, query.playQueueItemID);
 			}

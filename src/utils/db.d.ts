@@ -10,8 +10,9 @@ export interface ItemMappings {
 export interface PlayQueues {
 	id: Generated<number>;
 	playbackSessionId: string;
-	currentItem: string;
-	items: string | JSON;
+	currentItem: string; //GUID of the currently playing item
+	item: string; //Show or movie Plex GUID (plex://show/<id> | plex://movie/<id>)
+	offset: number; //Internal, client-invisible offset into the episode list
 	updated_at: Generated<number | null>;
 	created_at: Generated<number | null>;
 }
