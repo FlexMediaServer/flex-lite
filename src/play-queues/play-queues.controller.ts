@@ -183,6 +183,8 @@ export class PlayQueuesController {
 		query.guid = item.guid
 		query.ratingKey = localItem.key.split('/').pop()
 
+		if (query['X-Plex-Device'] === '') delete query['X-Plex-Device']
+
 		return await this.pmsService.plexServerApi('/:/timeline', {
 			query,
 			headers
@@ -233,6 +235,7 @@ export class PlayQueuesController {
 
 		query.path = localItem.key
 		if (query.videoResolution === '') query.videoResolution = '1080x1080'
+		if (query['X-Plex-Device'] === '') delete query['X-Plex-Device']
 
 		await this.pmsService.plexServerApi(req.path, {
 			method: 'GET',
@@ -300,6 +303,7 @@ export class PlayQueuesController {
 		// console.log(newQuery)
 		// query.session = undefined;
 		// query['X-Plex-Session-Id'.toLowerCase()] = undefined;
+		if (query['X-Plex-Device'] === '') delete query['X-Plex-Device']
 		// query['X-Plex-Playback-Session-Id'.toLowerCase()] = undefined;
 		// query['X-Plex-Playback-Id'.toLowerCase()] = undefined;
 		console.log(req.baseUrl + req.path, localItem.key)
@@ -315,6 +319,8 @@ export class PlayQueuesController {
 
 	@Get('/library/parts/{*path}')
 	async getPart (@Req() req: any, @Res({ passthrough: true }) res: any, @Query() query: any, @Headers() headers: any) {
+		if (query['X-Plex-Device'] === '') delete query['X-Plex-Device']
+		
 		let response = await this.pmsService.plexServerApi.raw(req.path, {
 			query,
 			headers,

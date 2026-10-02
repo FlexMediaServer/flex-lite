@@ -16,6 +16,7 @@ async function bootstrap() {
 
 	const pathFilter = function (path: string, req: any) {
 		// return !(path.startsWith('/transcode') && req.method === 'GET');
+		if (path.startsWith('/library/all')) return false;
 		if (path.startsWith('/dummy.mkv')) return false;
 		if (path.startsWith('/library/parts')) return false;
 		if (path.startsWith('/:/timeline')) return false;
