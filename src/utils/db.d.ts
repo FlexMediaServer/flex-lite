@@ -17,7 +17,18 @@ export interface PlayQueues {
 	created_at: Generated<number | null>;
 }
 
+export interface DB_Metadata {
+	created_at: Generated<number | null>;
+	data: unknown;
+	id: string;
+	imdb_id: Generated<string | null>;
+	tmdb_id: Generated<string | null>;
+	tvdb_id: Generated<string | null>;
+	updated_at: Generated<number | null>;
+}
+
 export interface DB {
 	item_mappings: ItemMappings;
 	play_queues: PlayQueues;
+	metadata: DB_Metadata;
 }

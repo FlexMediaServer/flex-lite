@@ -4,9 +4,12 @@ import { $Fetch, ofetch } from 'ofetch';
 import { normalizeQueryParams } from '../utils/request-values.js';
 import EventEmitter from 'events';
 import path from 'path';
+import { readFile } from 'node:fs/promises';
 import { db } from '../utils/database.js';
 import { MetadataService } from '../metadata/metadata.service.js';
 import { StremioService } from '../stremio/stremio.service.js';
+import { parseStringPromise } from 'xml2js';
+import { PROXY } from '../main.js';
 
 @Injectable()
 export class PMSService implements OnModuleInit {
@@ -25,60 +28,47 @@ export class PMSService implements OnModuleInit {
 			const plexToken = options?.query?.['X-Plex-Token'] || options?.query?.['x-plex-token'];
 			options.query = {
 				...normalizeQueryParams(options.query),
-				'X-Plex-Token': plexToken ? plexToken : process.env.PLEX_TOKEN
+				'X-Plex-Token': plexToken ? plexToken : this.plexToken
 			};
 		},
 	});
 
-	mountPath = '/data'
+	constructor() {}
 
-	libraries = {
-		show: '2',
-		movie: '1'
+	public plexToken: string;
+
+	async onModuleInit() {
+		this.preferences = await this.loadPreferencesFile();
+		this.plexToken = this.preferences?.Preferences?.$?.PlexOnlineToken
+		if (this.plexToken) PROXY.enabled = true;
 	}
 
-	constructor(
-		private metadataService: MetadataService,
-		private stremioService: StremioService,
-	) {}
+	private preferences: any;
 
-	async onModuleInit() {}
+	async loadPreferencesFile () {
+		const preferencesPath = process.env.PLEX_PREFERENCES_PATH;
+		if (!preferencesPath) return null;
 
-	users: any = {};
-
-	async getUser (token: string) {
-		let user = this.users[token]
-
-		if (!user) {
-			user = await ofetch('https://plex.tv/api/v2/user', {
-				headers: {
-					Accept: 'application/json',
-					'X-Plex-Token': token
-				}
-			});
-			this.users[token] = user;
-		}
-
-		return user
+		const xml = await readFile(preferencesPath, 'utf8');
+		return await parseStringPromise(xml);
 	}
 
-	async refreshPath(metadata: Metadata, folder: string) {
-		const folderPath = path.dirname(path.join(this.mountPath, folder)).replaceAll('\\', '/');
+	// users: any = {};
+	// async getUser (token: string) {
+	// 	let user = this.users[token]
 
-		let sectionId: string | undefined;
-		if (metadata.type === 'movie') {
-			sectionId = this.libraries.movie;
-		} else if (metadata.type === 'episode' || metadata.type === 'show') {
-			sectionId = this.libraries.show;
-		}
+	// 	if (!user) {
+	// 		user = await ofetch('https://plex.tv/api/v2/user', {
+	// 			headers: {
+	// 				Accept: 'application/json',
+	// 				'X-Plex-Token': token
+	// 			}
+	// 		});
+	// 		this.users[token] = user;
+	// 	}
 
-		if (!sectionId) return;
-
-		console.log('Refresh Path:', folderPath);
-		console.log(await this.plexServerApi(`/library/sections/${sectionId}/refresh`, {
-			query: { path: folderPath },
-		}));
-	}
+	// 	return user
+	// }
 	
 	async resolveLocalItem(item: Metadata): Promise<Metadata | null> {
 		const guid = item?.guid?.split('/')?.pop();
@@ -113,7 +103,18 @@ export class PMSService implements OnModuleInit {
 
 		let itemMappingId: string | undefined;
 
-		if (!itemMapping) {
+		if (itemMapping) {
+			// Only return the existing item if it is still present in the Plex server
+			const existingItem = await this.resolveLocalItem(item);
+
+			if (existingItem) {
+				itemMappingId = itemMapping.item_id;
+			} else {
+				await db.deleteFrom('item_mappings').where('guid', '=', guid).execute();
+			}
+		}
+
+		if (!itemMappingId) {
 			const metadataItem = (
 				await this.plexServerApi('/library/file', {
 					method: 'POST',
@@ -125,23 +126,23 @@ export class PMSService implements OnModuleInit {
 				})
 			).MediaContainer.Metadata[0] as Metadata;
 
-			await this.plexServerApi(`${metadataItem.key}/match`, {
-				method: 'PUT',
-				query: {
-					guid: item.guid,
-					name: item.title
-				}
-			})
+			// await this.plexServerApi(`${metadataItem.key}/match`, {
+			// 	method: 'PUT',
+			// 	query: {
+			// 		guid: item.guid,
+			// 		name: item.title
+			// 	}
+			// })
 
 			itemMappingId = metadataItem?.key.split('/').pop();
 
-			await db
-				.insertInto('item_mappings')
-				.values({ guid, item_id: itemMappingId as string })
-				.onConflict((oc) => oc.column('guid').doUpdateSet({ item_id: itemMappingId }))
-				.execute();
-		} else {
-			itemMappingId = itemMapping.item_id;
+			if (itemMappingId) {
+				await db
+					.insertInto('item_mappings')
+					.values({ guid, item_id: itemMappingId })
+					.onConflict((oc) => oc.column('guid').doUpdateSet({ item_id: itemMappingId }))
+					.execute();
+			}
 		}
 
 		this.eventBus.emit(`imported:${guid}`, itemMappingId);

@@ -12,6 +12,7 @@ import { Readable } from 'node:stream';
 import { MediaContainer } from '../dto/MediaContainer.entity.js';
 import { IsXML } from '../is-xml.decorator.js';
 import { AppService } from '../app.service.js';
+import util from 'util';
 
 @Controller()
 export class PlayQueuesController {
@@ -231,45 +232,35 @@ export class PlayQueuesController {
 		let localItem = await this.pmsService.resolveLocalItem(item);
 		if (!localItem || localItem.Media?.[0] === undefined) throw new NotFoundException()
 
-		const directPlay = process.env.ALLOW_DIRECT_PLAY === 'true';
-
 		query.path = localItem.key
 		if (query.videoResolution === '') query.videoResolution = '1080x1080'
 		if (query['X-Plex-Device'] === '') delete query['X-Plex-Device']
 
-		await this.pmsService.plexServerApi(req.path, {
+		const decision = await this.pmsService.plexServerApi(req.path, {
 			method: 'GET',
 			query,
 			headers
-		})
+		});
+
+		// console.log(decision.MediaContainer.Metadata[0].Media[0],{showHidden: false, depth: null, colors: true})
+
+		const Media = {...decision.MediaContainer?.Metadata[0].Media[0]}
+
+		if (decision.MediaContainer) {
+			decision.MediaContainer.Metadata = undefined;
+			decision.MediaContainer.size = undefined;
+		}
 
 		return {
 			MediaContainer: new MediaContainer({
-				allowSync: true,
-
-				directPlayDecisionCode: directPlay ? 1000 : 3000,
-				directPlayDecisionText: directPlay ? 'Direct play OK.' : 'App cannot direct play this item. Direct play is disabled.',
-
-				mdeDecisionCode: directPlay ? 1000 : 3000,
-				mdeDecisionText: directPlay ? 'Direct play OK.' : 'App cannot direct play this item. Direct play is disabled.',
-
-				generalDecisionCode: directPlay ? 1000 : 1000,
-				generalDecisionText: directPlay ? 'Direct play OK.' : 'Direct play not available; Conversion OK.',
-
-				transcodeDecisionCode: !directPlay ? 1001 : undefined,
-				transcodeDecisionText: !directPlay ? 'Direct play not available; Conversion OK.' : undefined,
-
-				identifier: 'com.plexapp.plugins.library',
-
-				mediaTagPrefix: '/system/bundle/media/flags/',
-				mediaTagVersion: 1731522690,
+				...decision.MediaContainer,
 				resourceSession: query.session,
 
 				[isXML ? 'Video' : 'Metadata']: [
 					new Metadata({
 						...item,
 
-						Media: [localItem.Media[0]],
+						Media: [Media],
 					}),
 				],
 			})
@@ -279,7 +270,7 @@ export class PlayQueuesController {
 	@Get([
 		'/video/:id/transcode/universal/start.mpd',
 		'/video/:id/transcode/universal/start.m3u8',
-		'/video/:id/transcode/universal/start.mkv', //TODO properly proxy this as a stream
+		'/video/:id/transcode/universal/start.mkv',
 		'/video/:id/transcode/universal/start',
 	])
 	async start(@Req() req: any, @Res() res: any, @Query() query: any, @Headers() headers: any) {
@@ -290,31 +281,28 @@ export class PlayQueuesController {
 		let localItem = await this.pmsService.resolveLocalItem(item);
 		if (!localItem) throw new NotFoundException('Local item not found')
 
-		// const newQuery: any = {}
 		query.path = localItem.key
-		// newQuery.protocol = query.protocol
-		// query.location = 'lan' //To prevent Plex from limiting transcode quality to 480p
-		// query.session = Date.now().toString(36) + Math.random().toString(36).substring(2);
-		// query['X-Plex-Playback-Id'] = undefined;
-		// query['X-Plex-Playback-Session-Id'] = undefined;
-		// query['X-Plex-Session-Id'] = undefined;
-		// query['X-Plex-Session-Identifier'] = undefined;
-		// newQuery['X-Plex-Client-Identifier'] = Date.now().toString(36) + Math.random().toString(36).substring(2);
-		// console.log(newQuery)
-		// query.session = undefined;
-		// query['X-Plex-Session-Id'.toLowerCase()] = undefined;
 		if (query['X-Plex-Device'] === '') delete query['X-Plex-Device']
-		// query['X-Plex-Playback-Session-Id'.toLowerCase()] = undefined;
-		// query['X-Plex-Playback-Id'.toLowerCase()] = undefined;
-		console.log(req.baseUrl + req.path, localItem.key)
-		let response = await this.pmsService.plexServerApi(req.baseUrl + req.path, {
-			query,
-			headers
-		})
 
-		// Get response array buffer or stream and send it
-		const buffer = await response.arrayBuffer();
-		res.send(Buffer.from(buffer));
+		console.log(req.baseUrl + req.path, localItem.key)
+		const response = await this.pmsService.plexServerApi.raw(req.baseUrl + req.path, {
+			query,
+			headers,
+			responseType: 'stream',
+		});
+
+		res.status(response.status);
+
+		const contentType = response.headers.get('content-type');
+		if (contentType) res.header('Content-Type', contentType);
+
+		const contentLength = response.headers.get('content-length');
+		if (contentLength) res.header('Content-Length', contentLength);
+
+		// Stream through with backpressure
+		const nodeStream = Readable.fromWeb(response._data as any);
+		req.on('close', () => nodeStream.destroy());
+		nodeStream.pipe(res);
 	}
 
 	@Get('/library/parts/{*path}')
@@ -336,7 +324,7 @@ export class PlayQueuesController {
 
 		res.header('Accept-Ranges', 'bytes')
 
-		// 2. Extract headers from the response object
+		//Extract headers from the response object
 		const contentType = response.headers.get('content-type') || 'application/octet-stream';
 		const contentDisposition = response.headers.get('content-disposition') || undefined;
 		const contentLength = response.headers.get('content-length');
