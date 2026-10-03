@@ -1,4 +1,4 @@
-import { Post, Query, Headers, Res, NotFoundException, Controller, Get, Param, InternalServerErrorException, Put, Delete, Req, StreamableFile, Header } from '@nestjs/common';
+import { Post, Query, Headers, Res, NotFoundException, Controller, Get, Param, InternalServerErrorException, Put, Delete, Req, StreamableFile, Header, UseGuards } from '@nestjs/common';
 import { randomInt } from 'node:crypto';
 import { PlayQueuesQuery } from './play-queues.dto.js';
 import { parseKey } from '../utils/generic.js';
@@ -13,8 +13,10 @@ import { MediaContainer } from '../dto/MediaContainer.entity.js';
 import { IsXML } from '../is-xml.decorator.js';
 import { AppService } from '../app.service.js';
 import util from 'util';
+import { LoggedInGuard } from '../middleware/logged-in.guard.js';
 
 @Controller()
+@UseGuards(LoggedInGuard)
 export class PlayQueuesController {
 	constructor(
 		private appService: AppService,
@@ -37,9 +39,7 @@ export class PlayQueuesController {
 
 		const playbackSessionId =
 			headers['x-plex-playback-session-id'] ||
-			query['x-plex-playback-session-id'] ||
-			headers['x-plex-session-id'] ||
-			query['x-plex-session-id'];
+			headers['x-plex-session-id'];
 
 		// Only the show/movie GUID, current item GUID and internal offset are stored.
 		// Episode lists are fetched live from the Plex Discover /grandchildren endpoint.
@@ -95,7 +95,7 @@ export class PlayQueuesController {
 
 		for (const windowItem of window.items) {
 			if (windowItem === currentItemObj) {
-				const localItem = await this.pmsService.resolveLocalItem(windowItem);
+				const localItem = (await this.pmsService.resolveLocalItem([windowItem]))[0];
 				windowItem.Media = localItem?.Media?.[0] ? [localItem.Media[0]] : (emptyMedia() as any);
 			} else {
 				windowItem.Media = emptyMedia() as any;
@@ -122,10 +122,10 @@ export class PlayQueuesController {
 		const currentItem = window.items.find((entry: any) => entry.guid === playQueue.currentItem || entry.ratingKey === currentRatingKey) as Metadata;
 		if (!currentItem) throw new NotFoundException();
 
-		let localItem = await this.pmsService.resolveLocalItem(currentItem);
+		let localItem = (await this.pmsService.resolveLocalItem([currentItem]))[0];
 		if (!localItem) {
 			await this.appService.resolveMedia(currentItem);
-			localItem = await this.pmsService.resolveLocalItem(currentItem);
+			localItem = (await this.pmsService.resolveLocalItem([currentItem]))[0];
 		}
 		if (!localItem) throw new NotFoundException();
 
@@ -158,9 +158,7 @@ export class PlayQueuesController {
 	) {
 		const playbackSessionId =
 			headers['x-plex-playback-session-id'] ||
-			query['x-plex-playback-session-id'] ||
-			headers['x-plex-session-id'] ||
-			query['x-plex-session-id'];
+			headers['x-plex-session-id'];
 
 		const playQueue = await this.playQueuesService.getPlayQueueByPlaybackSession(playbackSessionId);
 
@@ -176,7 +174,7 @@ export class PlayQueuesController {
 			}
 		}
 
-		let localItem = await this.pmsService.resolveLocalItem(item);
+		let localItem = (await this.pmsService.resolveLocalItem([item]))[0];
 		if (!localItem) return new NotFoundException()
 
 		query.path = localItem.key
@@ -192,8 +190,9 @@ export class PlayQueuesController {
 		})
 	}
 
-	@Get('/:id/scrobble')
+	@Get(['/:id/scrobble', '/:id/unscrobble'])
 	async scrobble(
+		@Req() req: any,
 		@Query()
 		query: {
 			key: string;
@@ -206,15 +205,25 @@ export class PlayQueuesController {
 		@Headers() headers: { 'x-plex-playback-session-id': string } & any,
 	) {
 
+		const scrobble = req.path.endsWith('/scrobble');
+
 		const item = await this.metadataService.getItem(query.key);
 		if (!item) throw new NotFoundException();
 
-		let localItem = await this.pmsService.resolveLocalItem(item);
+		let localItem = (await this.pmsService.resolveLocalItem([item]))[0];
 		if (!localItem) return new NotFoundException()
 
 		query.key = localItem.key.split('/').pop()
 
 		// console.log(query)
+
+		// await this.metadataService.discoverApi('/actions/scrobble', {
+		// 	query: {
+		// 		identifier: 'tv.plex.provider.discover',
+		// 		key: query.key,
+		// 		'X-Plex-Token': headers['x-plex-token']
+		// 	},
+		// })
 
 		return await this.pmsService.plexServerApi('/:/scrobble', {
 			method: 'GET',
@@ -229,7 +238,7 @@ export class PlayQueuesController {
 		const itemId = query.path.split('/').pop()
 		let item = await this.metadataService.getItem(itemId)
 		if (!item) throw new NotFoundException()
-		let localItem = await this.pmsService.resolveLocalItem(item);
+		let localItem = (await this.pmsService.resolveLocalItem([item]))[0];
 		if (!localItem || localItem.Media?.[0] === undefined) throw new NotFoundException()
 
 		query.path = localItem.key
@@ -278,7 +287,7 @@ export class PlayQueuesController {
 		let item = await this.metadataService.getItem(itemId)
 		if (!item) throw new NotFoundException('Plex metadata item not found')
 
-		let localItem = await this.pmsService.resolveLocalItem(item);
+		let localItem = (await this.pmsService.resolveLocalItem([item]))[0];
 		if (!localItem) throw new NotFoundException('Local item not found')
 
 		query.path = localItem.key

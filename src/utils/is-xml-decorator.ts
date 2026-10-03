@@ -1,5 +1,5 @@
 import { createParamDecorator, ExecutionContext } from "@nestjs/common";
-import { toRequestListString } from "../utils/request-values.js";
+import { toRequestListString } from "./request-values.js";
 
 export const IsXML = createParamDecorator((data: unknown, ctx: ExecutionContext) => {
 	const request = ctx.switchToHttp().getRequest();

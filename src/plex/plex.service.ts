@@ -53,42 +53,38 @@ export class PMSService implements OnModuleInit {
 		return await parseStringPromise(xml);
 	}
 
-	// users: any = {};
-	// async getUser (token: string) {
-	// 	let user = this.users[token]
-
-	// 	if (!user) {
-	// 		user = await ofetch('https://plex.tv/api/v2/user', {
-	// 			headers: {
-	// 				Accept: 'application/json',
-	// 				'X-Plex-Token': token
-	// 			}
-	// 		});
-	// 		this.users[token] = user;
-	// 	}
-
-	// 	return user
-	// }
 	
-	async resolveLocalItem(item: Metadata): Promise<Metadata | null> {
-		const guid = item?.guid?.split('/')?.pop();
-		if (!guid) return null;
+	//Resolves items to their local Plex metadata in one batch. Returns results aligned with the input array (null when unresolved).
+	async resolveLocalItem (items: Metadata[]): Promise<(Metadata | null)[]> {
+		const itemIds = items.map((item) => item?.guid?.split('/')?.pop());
+		const guids = [...new Set(itemIds.filter((guid): guid is string => !!guid))];
 
-		const itemId = (
-			await db
-				.selectFrom('item_mappings')
-				.select('item_id')
-				.where('guid', '=', guid)
-				.executeTakeFirst()
-		)?.item_id;
+		const guidToItemId = new Map(
+			(
+				guids.length
+					? await db
+						.selectFrom('item_mappings')
+						.select(['guid', 'item_id'])
+						.where('guid', 'in', guids)
+						.execute()
+					: []
+			).map((mapping) => [mapping.guid, mapping.item_id]),
+		);
 
-		if (!itemId) return null;
+		const resolvedIds = [...new Set(itemIds.map((itemId) => itemId && guidToItemId.get(itemId)).filter((id): id is string => !!id))];
 
+		if (!resolvedIds.length) return items.map(() => null);
+
+		//Plex accepts comma separated item IDs for batch metadata fetches.
+		let resolvedById: Map<string | undefined, Metadata>;
 		try {
-			return (await this.plexServerApi(`/library/metadata/${itemId}`))?.MediaContainer?.Metadata?.[0] ?? null;
+			const metadata = (await this.plexServerApi(`/library/metadata/${resolvedIds.join(',')}`))?.MediaContainer?.Metadata ?? [];
+			resolvedById = new Map(metadata.map((item: Metadata) => [item.ratingKey?.split('/').pop(), item]));
 		} catch {
-			return null;
+			return items.map(() => null);
 		}
+
+		return itemIds.map((itemId) => resolvedById.get((itemId && guidToItemId.get(itemId)) ?? '') ?? null);
 	}
 
 	async addStream(item: Metadata, url: string) {
@@ -105,7 +101,7 @@ export class PMSService implements OnModuleInit {
 
 		if (itemMapping) {
 			// Only return the existing item if it is still present in the Plex server
-			const existingItem = await this.resolveLocalItem(item);
+			const existingItem = (await this.resolveLocalItem([item]))[0];
 
 			if (existingItem) {
 				itemMappingId = itemMapping.item_id;
