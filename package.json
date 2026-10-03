@@ -28,7 +28,9 @@
     "@nestjs/core": "^12.0.1",
     "@nestjs/observe": "^0.1.8",
     "@nestjs/platform-express": "^12.0.1",
+    "@nestjs/platform-ws": "^12.1.2",
     "@nestjs/schedule": "^12.0.2",
+    "@nestjs/websockets": "^12.1.2",
     "axios": "^1.20.0",
     "better-sqlite3": "^13.0.3",
     "class-transformer": "^0.5.1",
@@ -44,6 +46,7 @@
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "to-xml": "^0.1.11",
+    "ws": "^8.22.0",
     "xml2js": "^0.6.2"
   },
   "devDependencies": {
@@ -58,6 +61,7 @@
     "@types/node": "^24.0.0",
     "@types/pg": "^8.23.1",
     "@types/supertest": "^7.0.0",
+    "@types/ws": "^8.18.2",
     "@types/xml2js": "^0.4.14",
     "@vitest/coverage-v8": "^4.1.2",
     "fluent-ffmpeg": "^2.1.3",

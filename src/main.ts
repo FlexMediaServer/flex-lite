@@ -1,4 +1,5 @@
 import { NestFactory } from '@nestjs/core';
+import { WsAdapter } from '@nestjs/platform-ws';
 import { AppModule, ObserveInstrument } from './app.module.js';
 import { createProxyMiddleware, fixRequestBody, responseInterceptor } from 'http-proxy-middleware';
 import { FormatInterceptor } from './format.interceptor.js';
@@ -38,6 +39,9 @@ async function bootstrap() {
 
 	app.useGlobalInterceptors(new FormatInterceptor());
 	app.enableCors();
+
+	// Attach websocket gateways (e.g. the Plex notifications proxy) to this same HTTP server
+	app.useWebSocketAdapter(new WsAdapter(app));
 
 	app.use((req: any, res: any, next: any) => {
 		// req.baseUrl = req.baseUrl.replace(/\/{2,}/g, '/');
