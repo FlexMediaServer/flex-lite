@@ -10,6 +10,7 @@ import { PlexModule } from './plex/plex.module.js';
 import { StremioModule } from './stremio/stremio.module.js';
 import { XPlexMiddleware } from './middleware/x-plex.middleware.js';
 import { ClientIdentifier } from './middleware/client-identifier.middleware.js';
+import { AuthenticationMiddleware } from './middleware/authentication.middleware.js';
 
 export const { ObserveModule, ObserveInstrument } = createObserveModule();
 
@@ -37,5 +38,6 @@ export class AppModule {
 		consumer.apply(LoggerMiddleware).forRoutes('*');
 		consumer.apply(XPlexMiddleware).forRoutes('*');
 		consumer.apply(ClientIdentifier).forRoutes('*');
+		consumer.apply(AuthenticationMiddleware).forRoutes('*');
 	}
 }

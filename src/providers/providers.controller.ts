@@ -1,7 +1,9 @@
-import { Controller, Get, Headers, Query } from '@nestjs/common';
+import { Controller, Get, Headers, Query, UseGuards } from '@nestjs/common';
 import axios from 'axios';
+import { LoggedInGuard } from '../middleware/logged-in.guard.js';
 
 @Controller('')
+@UseGuards(LoggedInGuard)
 export class ProvidersController {
 	endpoint = process.env.PLEX_BASE ?? 'http://localhost:32400';
 

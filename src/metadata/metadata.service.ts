@@ -44,6 +44,121 @@ export class MetadataService {
 		},
 	});
 
+	/**
+	 * Hydrates metadata items in-place for a specific user and returns the same array.
+	 *
+	 * - Movies and episodes get their `Media` populated from the local Plex server via a single
+	 *   batched `resolveLocalItem` fetch (items without a local mapping keep their existing value).
+	 * - Shows and seasons get their `leafCount` reduced by the user's watched episode count
+	 *   (progress rows with `view_count > 0`), clamped at zero. Show progress is keyed by
+	 *   `grandparent_guid`; season progress additionally matches on `parent_index` vs the season's `index`.
+	 * - All items present in the `progress` table for this user get `viewOffset`, `viewCount`,
+	 *   `lastViewedAt` and `userState` set so clients render them as in-progress.
+	 *
+	 * Requires an authenticated user (`user.id`) for the progress portions; without one only
+	 * `Media` hydration runs.
+	 */
+	async hydrateMetadata (metadata: Metadata[], user: MyPlexUser): Promise<Metadata[]> {
+		if (!metadata.length) return metadata;
+
+		//Populate Media using a single batched metadata fetch.
+		const mediaItems = metadata.filter((item) => item.type === 'movie' || item.type === 'episode');
+		const localItems = await this.pmsService.resolveLocalItem(mediaItems);
+
+		for (const [i, item] of mediaItems.entries()) {
+			const localItem = localItems[i];
+			if (localItem?.Media?.[0]) item.Media = [localItem.Media[0]];
+		}
+
+		if (!user?.id) return metadata;
+
+		//Subtract watched episodes from the leaf count of shows and seasons.
+		const showGuids = [...new Set(
+			metadata
+				.filter((item) => item.type === 'show' && !!item.guid)
+				.map((item) => item.guid as string),
+		)];
+
+		const watchedByShow = new Map<string, number>(
+			(
+				showGuids.length
+					? await db
+						.selectFrom('progress')
+						.select('grandparent_guid')
+						.select((eb) => eb.fn.countAll().as('count'))
+						.where('account_id', '=', user.id)
+						.where('grandparent_guid', 'in', showGuids)
+						.where('view_count', '>', 0)
+						.groupBy('grandparent_guid')
+						.execute()
+					: []
+			).map((row) => [row.grandparent_guid as string, Number(row.count)]),
+		);
+
+		//Season progress is keyed by the show's GUID plus the season's index.
+		const seasonShowGuids = [...new Set(
+			metadata
+				.filter((item) => item.type === 'season' && !!item.parentGuid && item.index !== undefined)
+				.map((item) => item.parentGuid),
+		)];
+
+		const watchedBySeason = new Map<string, number>(
+			(
+				seasonShowGuids.length
+					? await db
+						.selectFrom('progress')
+						.select(['grandparent_guid', 'parent_index'])
+						.select((eb) => eb.fn.countAll().as('count'))
+						.where('account_id', '=', user.id)
+						.where('grandparent_guid', 'in', seasonShowGuids)
+						.where('view_count', '>', 0)
+						.groupBy(['grandparent_guid', 'parent_index'])
+						.execute()
+					: []
+			).map((row) => [`${row.grandparent_guid}/${row.parent_index}`, Number(row.count)]),
+		);
+
+		for (const item of metadata) {
+			if (item.leafCount === undefined) continue;
+
+			let watchedCount = 0;
+			if (item.type === 'show' && item.guid) watchedCount = watchedByShow.get(item.guid) ?? 0;
+			if (item.type === 'season' && item.parentGuid && item.index !== undefined) watchedCount = watchedBySeason.get(`${item.parentGuid}/${item.index}`) ?? 0;
+
+			if (watchedCount) item.leafCount = Math.max(0, item.leafCount - watchedCount);
+		}
+
+		const guids = [...new Set(
+			metadata
+				.map((item) => item.guid)
+				.filter((guid): guid is string => !!guid),
+		)];
+
+		if (!guids.length) return metadata;
+
+		// Kysely expands the `in` array into bind parameters automatically.
+		const progressRows = await db
+			.selectFrom('progress')
+			.select(['guid', 'view_count', 'view_offset', 'last_viewed_at'])
+			.where('account_id', '=', user.id)
+			.where('guid', 'in', guids)
+			.execute();
+
+		const progressByGuid = new Map(progressRows.map((row) => [row.guid, row]));
+
+		for (const item of metadata) {
+			const progress = item.guid ? progressByGuid.get(item.guid) : undefined;
+			if (!progress) continue;
+
+			item.viewOffset = progress.view_offset ?? undefined;
+			item.viewCount = progress.view_count ?? 0;
+			item.lastViewedAt = progress.last_viewed_at ?? undefined;
+			item.userState = true;
+		}
+
+		return metadata;
+	}
+
 	@Cron(CronExpression.EVERY_12_HOURS)
 	async syncStremioCatalogs(): Promise<void> {
 		const manifest = this.stremioService.getManifest();
@@ -63,10 +178,9 @@ export class MetadataService {
 			const resolved: (Metadata | null)[] = [];
 			for (const meta of catalog.metas) {
 				try {
-					resolved.push(await this.findPlexMetadataForStremioMeta(meta));
+					resolved.push(await this.resolvePlexItemFromStremioMeta(meta));
 				} catch (e) {
 					console.error(e);
-					resolved.push(null);
 				}
 			}
 
@@ -93,7 +207,7 @@ export class MetadataService {
 		console.info('Stremio Catalogs Complete');
 	}
 
-	async findPlexMetadataForStremioMeta(stremioMeta: StremioMeta): Promise<Metadata | null> {
+	async resolvePlexItemFromStremioMeta(stremioMeta: StremioMeta): Promise<Metadata | null> {
 		const isMovie = stremioMeta.type === 'movie';
 		const plexType = isMovie ? 1 : 2;
 
@@ -166,7 +280,7 @@ export class MetadataService {
 		const tmdbGuid = match.Guid?.find((g) => g.id.startsWith('tmdb://'))?.id?.replace('tmdb://', '') || tmdbId;
 		const tvdbGuid = match.Guid?.find((g) => g.id.startsWith('tvdb://'))?.id?.replace('tvdb://', '');
 
-		await this.upsertMetadataCacheEntry({
+		await this.upsertMetadataEntry({
 			id: plexId,
 			imdbId: imdbGuid ?? null,
 			tmdbId: tmdbGuid ?? null,
@@ -177,7 +291,7 @@ export class MetadataService {
 		return item;
 	}
 	
-	private async upsertMetadataCacheEntry(params: {
+	private async upsertMetadataEntry(params: {
 		id: string;
 		imdbId?: string | null;
 		tmdbId?: string | null;
@@ -275,7 +389,7 @@ export class MetadataService {
 					const tmdbGuid = item.Guid?.find((g: any) => g.id.startsWith('tmdb://'))?.id?.replace('tmdb://', '') || null;
 					const tvdbGuid = item.Guid?.find((g: any) => g.id.startsWith('tvdb://'))?.id?.replace('tvdb://', '') || null;
 
-					await this.upsertMetadataCacheEntry({
+					await this.upsertMetadataEntry({
 						id,
 						imdbId: imdbGuid,
 						tmdbId: tmdbGuid,

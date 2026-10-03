@@ -27,8 +27,23 @@ export interface DB_Metadata {
 	updated_at: Generated<number | null>;
 }
 
+export interface Progress {
+	id: Generated<number>;
+	account_id: number | null;
+	guid: string; //Plex GUID
+	grandparent_guid: string | null; //Plex GUID
+	index: number | null;
+	parent_index: number | null;
+	view_count: number | null;
+	view_offset: number | null;
+	last_viewed_at: number | null;
+	updated_at: Generated<number | null>;
+	created_at: Generated<number | null>;
+}
+
 export interface DB {
 	item_mappings: ItemMappings;
 	play_queues: PlayQueues;
+	progress: Progress;
 	metadata: DB_Metadata;
 }

@@ -20,7 +20,7 @@ export class AppService implements OnModuleInit {
 		if (existing) return existing;
 
 		const task = (async (): Promise<string | null> => {
-			const localItem = await this.pmsService.resolveLocalItem(item);
+			const localItem = (await this.pmsService.resolveLocalItem([item]))[0];
 			if (localItem && localItem.Media?.[0]) return localItem.key ?? null;
 
 			const stream = await this.stremioService.resolveStream(item);

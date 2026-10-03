@@ -7,14 +7,14 @@ import { Metadata } from '../dto/Metadata.entity.js';
 import { plainToInstance } from 'class-transformer';
 import { PMSService } from '../plex/plex.service.js';
 import { createPlatformMediaPlaceholder, emptyMedia } from '../utils/plex.js';
-import { Client } from '../middleware/client.decorator.js';
+import { Client } from '../utils/client.decorator.js';
+import { User } from '../utils/user.decorator.js';
 import { ClientType } from '../middleware/client-identifier.middleware.js';
 import { StremioService } from '../stremio/stremio.service.js';
 import { cache } from '../utils/database.js';
 import { Hub } from '../dto/Hub.entity.js';
 import { AppService } from '../app.service.js';
-
-const isNumeric = (val: any) => val !== '' && val !== null && Number.isFinite(Number(val));
+import { LoggedInGuard } from '../middleware/logged-in.guard.js';
 
 export type DiscoverSearchResult = {
 	id: string;
@@ -24,6 +24,7 @@ export type DiscoverSearchResult = {
 };
 
 @Controller()
+@UseGuards(LoggedInGuard)
 export class MetadataController {
 	constructor(
 		private appService: AppService,
@@ -116,7 +117,7 @@ export class MetadataController {
 		let metadata = await this.metadataService.getItem(params.id);
 		if (!metadata) throw new NotFoundException();
 
-		const localItem = await this.pmsService.resolveLocalItem(metadata);
+		const localItem = (await this.pmsService.resolveLocalItem([metadata]))[0];
 		if (!localItem) throw new NotFoundException();
 
 		query['X-Plex-Playback-Session-Id'] = undefined;
@@ -130,7 +131,7 @@ export class MetadataController {
 	}
 
 	@Get('/library/metadata/:id')
-	async metadata(@Headers() headers: any, @Query() query: any, @Param() params: any, @IsXML() isXML: boolean, @Client() clientType: ClientType) {
+	async metadata(@User() user: MyPlexUser, @Headers() headers: any, @Query() query: any, @Param() params: any, @IsXML() isXML: boolean, @Client() clientType: ClientType) {
 		let metadata = await this.metadataService.getItem(params.id);
 		if (!metadata) throw new NotFoundException();
 		
@@ -139,18 +140,17 @@ export class MetadataController {
 		if (
 			(
 				(clientType === ClientType.ROKU && headers['x-plex-playback-session-id']) || 
-				(clientType === ClientType.WEB && query['X-Plex-Playback-Id']) || 
-				(clientType === ClientType.BIGSCREEN && query['X-Plex-Playback-Id'])
+				(clientType === ClientType.WEB && headers['x-plex-playback-id']) || 
+				(clientType === ClientType.BIGSCREEN && headers['x-plex-playback-id'])
 			) && (metadata.type === 'episode' || metadata.type === 'movie')
 		) {
 			const itemPath = await this.appService.resolveMedia(metadata);
 			if (!itemPath) throw new NotFoundException()
 		}
 
-		const localItem = await this.pmsService.resolveLocalItem(metadata);
-		let useEmptyMedia = false;
+		await this.metadataService.hydrateMetadata([metadata], user);
 
-		const Media = localItem?.Media?.[0];
+		const Media = metadata.Media?.[0];
 		switch (clientType) {
 			case ClientType.NATIVE_ANDROID:
 			case ClientType.NATIVE_APPLE:
@@ -158,7 +158,7 @@ export class MetadataController {
 				break;
 			case ClientType.REACT_NATIVE:
 			case ClientType.ROKU:
-				if (Media) metadata.Media = [Media]
+				metadata.Media = Media ? [Media] : undefined
 			case ClientType.WEB:
 			case ClientType.BIGSCREEN:
 			default:
@@ -180,6 +180,7 @@ export class MetadataController {
 	@Get(['/library/metadata/:id/children', '/library/metadata/:id/grandchildren'])
 	async metadataChildren(
 		@Req() req: any,
+		@User() user: MyPlexUser,
 		@Param() params: any,
 		@Query() query: any,
 		@Headers() headers: any
@@ -188,8 +189,8 @@ export class MetadataController {
 		const children = await this.metadataService.discoverApi<{ MediaContainer?: MediaContainer }>(`/library/metadata/${params.id}/${type}`, {
 			query: {
 				excludeAllLeaves: 1,
-				'X-Plex-Container-Start': query['x-plex-container-start'] || headers['x-plex-container-start'],
-				'X-Plex-Container-Size': query['x-plex-container-size'] || headers['x-plex-container-size'] || 100,
+				'X-Plex-Container-Start': headers['x-plex-container-start'],
+				'X-Plex-Container-Size': headers['x-plex-container-size'] || 100,
 			},
 		});
 
@@ -214,21 +215,13 @@ export class MetadataController {
 				: undefined,
 		});
 
-		for (const metadata of result.Metadata || []) {
-			if (metadata.type === 'movie' || metadata.type === 'episode') {
-				let localItem = await this.pmsService.resolveLocalItem(metadata);
-				if (localItem && localItem.Media?.[0]) {
-					metadata.Media = [localItem.Media[0]];
-				} else {
-					metadata.Media = createPlatformMediaPlaceholder(metadata.ratingKey, headers['user-agent']);
-				}
-			}
+		const metadataItems = result.Metadata || [];
+		await this.metadataService.hydrateMetadata(metadataItems, user);
 
-			// if (progress) {
-			// 	metadata.duration = toOptionalNumber(progress.duration);
-			// 	metadata.viewOffset = !progress.complete ? toOptionalNumber(progress.progress) : undefined;
-			// 	metadata.viewCount = progress.complete ? 1 : undefined;
-			// }
+		for (const metadata of metadataItems) {
+			if (!metadata.Media?.length && (metadata.type === 'movie' || metadata.type === 'episode')) {
+				metadata.Media = createPlatformMediaPlaceholder(metadata.ratingKey, headers['user-agent']);
+			}
 
 			metadata.userState = true;
 		}
@@ -315,8 +308,8 @@ export class MetadataController {
 	@Get('/hubs/:id/items')
 	async getHubItems (@Param() params: any, @Query() query: any, @Headers() headers: any, @IsXML() isXML: boolean) {
 		const metadata = this.metadataService.hubs.find((hub) => hub.hubIdentifier === params.id)?.Metadata
-		const offset = parseInt(query['x-plex-container-start']) || parseInt(headers['x-plex-container-start']) || 0;
-		const limit = parseInt(query['x-plex-container-size']) || parseInt(headers['x-plex-container-size']) || 50;
+		const offset = parseInt(headers['x-plex-container-start']) || 0;
+		const limit = parseInt(headers['x-plex-container-size']) || 50;
 		return {
 			MediaContainer: new MediaContainer({
 				identifier: 'com.plexapp.plugins.library',
