@@ -284,6 +284,18 @@ export class PlayQueuesController {
 		query.path = localItem.key
 		if (query['X-Plex-Device'] === '') delete query['X-Plex-Device']
 
+		if (req.path.includes('.mpd') || req.path.includes('.m3u8')) {
+			const arrayBuffer = await this.pmsService.plexServerApi(req.baseUrl + req.path, {
+				query,
+				headers,
+				responseType: 'arrayBuffer'
+			});
+
+			const buffer = Buffer.from(arrayBuffer);
+
+			return res.status(200).send(buffer);
+		}
+
 		console.log(req.baseUrl + req.path, localItem.key)
 		const response = await this.pmsService.plexServerApi.raw(req.baseUrl + req.path, {
 			query,
