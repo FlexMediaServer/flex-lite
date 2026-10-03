@@ -1,6 +1,6 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { Metadata } from '../dto/Metadata.entity.js';
-import { CinemetaResponse, StremioContentType, StremioManifest, StremioStreamInfo, StremioStreamResponse, TheXemAllNames, TheXemMapping } from './stremio.js';
+import { CinemetaResponse, StremioContentType, StremioManifest, StremioManifestCatalog, StremioManifestCatalogWithMeta, StremioMeta, StremioStreamInfo, StremioStreamResponse, TheXemAllNames, TheXemMapping } from './stremio.js';
 import { MetadataService } from '../metadata/metadata.service.js';
 import { ofetch } from 'ofetch';
 import { cache } from '../utils/database.js';
@@ -27,6 +27,8 @@ export class StremioService implements OnModuleInit {
 		this.addonManifest = await ofetch<StremioManifest>(manifestUrl);
 		console.info(`Loaded Stremio addon manifest from ${manifestUrl}`);
 
+		this.metadataService.syncStremioCatalogs();
+
 		// //Fetch XEM allNames on initialization
 		// try {
 		// 	await this.fetchAllXemSeries();
@@ -50,19 +52,60 @@ export class StremioService implements OnModuleInit {
 		}
 	}
 
-	private async fetchAllXemSeries(): Promise<void> {
-		try {
-			const response = await ofetch<TheXemAllNames>('https://thexem.info/map/allNames?origin=tvdb');
-			if (response.result === 'success') {
-				this.xemAllNames = response.data;
-				console.debug(`Fetched XEM allNames successfully, ${Object.keys(response.data).length} shows mapped`);
-			} else {
-				console.error('XEM allNames fetch returned non-success result:', response.message);
-			}
-		} catch (error) {
-			console.error('Failed to fetch XEM allNames:', error);
-		}
+	getManifestUrl() {
+		return this.addonManifestUrl;
 	}
+
+	getAddonBaseUrl() {
+		return this.addonBaseUrl;
+	}
+
+	getManifest(): StremioManifest | null {
+		return this.addonManifest;
+	}
+
+	async getCatalogs(includeMeta: true): Promise<StremioManifestCatalogWithMeta[]>;
+	async getCatalogs(includeMeta: false): Promise<StremioManifestCatalog[]>;
+	async getCatalogs(includeMeta: boolean): Promise<StremioManifestCatalog[] | StremioManifestCatalogWithMeta[]> {
+		const catalogs = this.addonManifest?.catalogs ?? [];
+
+		if (!includeMeta) return catalogs;
+
+		const results = await Promise.allSettled(catalogs.map((catalog) => this.getCatalog(catalog.id, catalog.type)));
+
+		return catalogs.map((catalog, i) => {
+			const result = results[i];
+			return {
+				...catalog,
+				metas: result.status === 'fulfilled' && result.value ? result.value.metas : [],
+			};
+		});
+	}
+
+	async getCatalog(id: string, type?: StremioContentType): Promise<{ metas: StremioMeta[] } | null> {
+		if (!this.addonBaseUrl) return null;
+
+		const resolvedType = type ?? this.addonManifest?.catalogs.find((c) => c.id === id)?.type;
+		if (!resolvedType) return null;
+
+		const url = `${this.addonBaseUrl}/catalog/${resolvedType}/${id}.json`;
+		console.debug(`Fetching catalog: ${url}`);
+		return await ofetch<{ metas: StremioMeta[] }>(url);
+	}
+
+	// private async fetchAllXemSeries(): Promise<void> {
+	// 	try {
+	// 		const response = await ofetch<TheXemAllNames>('https://thexem.info/map/allNames?origin=tvdb');
+	// 		if (response.result === 'success') {
+	// 			this.xemAllNames = response.data;
+	// 			console.debug(`Fetched XEM allNames successfully, ${Object.keys(response.data).length} shows mapped`);
+	// 		} else {
+	// 			console.error('XEM allNames fetch returned non-success result:', response.message);
+	// 		}
+	// 	} catch (error) {
+	// 		console.error('Failed to fetch XEM allNames:', error);
+	// 	}
+	// }
 
 	public async resolveStream (item: Metadata): Promise<{ url: string | undefined } | null> {
 		const stremioId = await this.resolveStremioID(item);

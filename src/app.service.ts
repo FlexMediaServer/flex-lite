@@ -1,20 +1,22 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, OnModuleInit } from '@nestjs/common';
 import { Metadata } from './dto/Metadata.entity.js';
 import { StremioService } from './stremio/stremio.service.js';
 import { PMSService } from './plex/plex.service.js';
 
 @Injectable()
-export class AppService {
+export class AppService implements OnModuleInit {
 
-	private readonly tasks = new WeakMap<Metadata, Promise<string | null>>();
+	private readonly tasks = new Map<string, Promise<string | null>>();
 
 	constructor (
 		private stremioService: StremioService,
 		private pmsService: PMSService,
 	) {}
 
+	async onModuleInit () {}
+
 	resolveMedia (item: Metadata): Promise<string | null> {
-		const existing = this.tasks.get(item);
+		const existing = this.tasks.get(item.guid as string);
 		if (existing) return existing;
 
 		const task = (async (): Promise<string | null> => {
@@ -24,9 +26,9 @@ export class AppService {
 			const stream = await this.stremioService.resolveStream(item);
 			if (!stream || !stream.url) return null;
 			return await this.pmsService.addStream(item, stream.url) ?? null;
-		})().finally(() => this.tasks.delete(item));
+		})().finally(() => this.tasks.delete(item.guid as string));
 
-		this.tasks.set(item, task);
+		this.tasks.set(item.guid as string, task);
 
 		return task;
 	}

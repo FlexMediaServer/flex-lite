@@ -133,16 +133,16 @@ export class MetadataController {
 	async metadata(@Headers() headers: any, @Query() query: any, @Param() params: any, @IsXML() isXML: boolean, @Client() clientType: ClientType) {
 		let metadata = await this.metadataService.getItem(params.id);
 		if (!metadata) throw new NotFoundException();
-
-		// const token = query['X-Plex-Token'];
-
-		// console.log(query, token)
-
-		// console.log(await this.pmsService.getUser(query['X-Plex-Token']));
 		
 		//Forces stream resolution. This fixes an issue that prevents playback from starting when going to next item in play queue. Currently only targets web and roku, however some other clients may need this enabled as well.
 		console.log(headers, query)
-		if (((clientType === ClientType.ROKU && headers['x-plex-playback-session-id']) || clientType === ClientType.WEB && query['X-Plex-Playback-Id']) && (metadata.type === 'episode' || metadata.type === 'movie')) {
+		if (
+			(
+				(clientType === ClientType.ROKU && headers['x-plex-playback-session-id']) || 
+				(clientType === ClientType.WEB && query['X-Plex-Playback-Id']) || 
+				(clientType === ClientType.BIGSCREEN && query['X-Plex-Playback-Id'])
+			) && (metadata.type === 'episode' || metadata.type === 'movie')
+		) {
 			const itemPath = await this.appService.resolveMedia(metadata);
 			if (!itemPath) throw new NotFoundException()
 		}
@@ -150,14 +150,21 @@ export class MetadataController {
 		const localItem = await this.pmsService.resolveLocalItem(metadata);
 		let useEmptyMedia = false;
 
+		const Media = localItem?.Media?.[0];
 		switch (clientType) {
 			case ClientType.NATIVE_ANDROID:
 			case ClientType.NATIVE_APPLE:
-				useEmptyMedia = true;
+				metadata.Media = Media ? [Media] : [emptyMedia() as any]
+				break;
+			case ClientType.REACT_NATIVE:
+			case ClientType.ROKU:
+				if (Media) metadata.Media = [Media]
+			case ClientType.WEB:
+			case ClientType.BIGSCREEN:
+			default:
+				metadata.Media = Media ? [Media] : []
 				break;
 		}
-
-		if (metadata?.type === 'episode' || metadata?.type === 'movie') metadata.Media = localItem?.Media && localItem?.Media?.[0] ? [localItem.Media[0]] : (useEmptyMedia) ? emptyMedia() as any : [];
 
 		return {
 			MediaContainer: new MediaContainer({
@@ -301,6 +308,33 @@ export class MetadataController {
 
 					return result;
 				})
+			})
+		}
+	}
+
+	@Get('/hubs/:id/items')
+	async getHubItems (@Param() params: any, @Query() query: any, @Headers() headers: any, @IsXML() isXML: boolean) {
+		const metadata = this.metadataService.hubs.find((hub) => hub.hubIdentifier === params.id)?.Metadata
+		const offset = parseInt(query['x-plex-container-start']) || parseInt(headers['x-plex-container-start']) || 0;
+		const limit = parseInt(query['x-plex-container-size']) || parseInt(headers['x-plex-container-size']) || 50;
+		return {
+			MediaContainer: new MediaContainer({
+				identifier: 'com.plexapp.plugins.library',
+				[isXML ? 'Video' : 'Metadata']: metadata?.slice(offset, offset+limit).map(item => {
+					delete item.Rating;
+					delete (item as Metadata & { Actor: any }).Actor;
+					delete (item as Metadata & { Collection: any }).Collection;
+					delete (item as Metadata & { Country: any }).Country;
+					delete (item as Metadata & { Label: any }).Label;
+					delete (item as Metadata & { Mood: any }).Mood;
+					delete (item as Metadata & { Part: any }).Part;
+					delete (item as Metadata & { Producer: any }).Producer;
+					delete (item as Metadata & { Similar: any }).Similar;
+					delete (item as Metadata & { Photo: any }).Photo;
+					return item
+				}) ?? [],
+				totalSize: metadata?.length,
+				offset: offset
 			})
 		}
 	}
