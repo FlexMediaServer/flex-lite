@@ -148,7 +148,7 @@ export class MetadataController {
 			if (!itemPath) throw new NotFoundException()
 		}
 
-		await this.metadataService.hydrateMetadata([metadata], user);
+		await this.metadataService.hydrateMetadata([metadata], user, headers['x-plex-token']);
 
 		const Media = metadata.Media?.[0];
 		switch (clientType) {
@@ -216,7 +216,7 @@ export class MetadataController {
 		});
 
 		const metadataItems = result.Metadata || [];
-		await this.metadataService.hydrateMetadata(metadataItems, user);
+		await this.metadataService.hydrateMetadata(metadataItems, user, headers['x-plex-token']);
 
 		for (const metadata of metadataItems) {
 			if (!metadata.Media?.length && (metadata.type === 'movie' || metadata.type === 'episode')) {

@@ -41,6 +41,16 @@ declare type MyPlexUser = {
 	attributionPartner?: null;
 };
 
+declare type PlexUserState = {
+	type?: string;
+	viewState?: string;
+	ratingKey?: string;
+	viewCount?: number;
+	viewOffset?: number;
+	lastViewedAt?: number;
+	viewedLeafCount?: number;
+};
+
 declare type Profile = {
 	autoSelectAudio?: boolean;
 	defaultAudioAccessibility?: number;
