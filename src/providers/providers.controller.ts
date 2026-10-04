@@ -3,7 +3,7 @@ import axios from 'axios';
 import { LoggedInGuard } from '../middleware/logged-in.guard.js';
 
 @Controller('')
-@UseGuards(LoggedInGuard)
+// @UseGuards(LoggedInGuard)
 export class ProvidersController {
 	endpoint = process.env.PLEX_BASE ?? 'http://localhost:32400';
 

@@ -23,6 +23,7 @@ async function bootstrap() {
 		// return !(path.startsWith('/transcode') && req.method === 'GET');
 		if (path.startsWith('/library/all')) return !PROXY.enabled;
 		if (path.startsWith('/hubs/')) return !PROXY.enabled;
+		if (path.startsWith('/actions/removeFromContinueWatching')) return !PROXY.enabled;
 		if (path.startsWith('/dummy.mkv')) return !PROXY.enabled;
 		if (path.startsWith('/library/parts')) return !PROXY.enabled;
 		if (path.startsWith('/:/timeline')) return !PROXY.enabled;

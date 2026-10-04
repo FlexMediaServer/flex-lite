@@ -1,4 +1,4 @@
-import { Controller, Get, NotFoundException, Param, Query, Req, UseGuards, Headers, BadRequestException } from '@nestjs/common';
+import { Controller, Get, NotFoundException, Param, Query, Req, UseGuards, Headers, BadRequestException, Put } from '@nestjs/common';
 import type { Request } from 'express';
 import { MediaContainer } from '../dto/MediaContainer.entity.js';
 import { IsXML } from '../is-xml.decorator.js';
@@ -69,8 +69,56 @@ export class MetadataController {
 		};
 	}
 
+
+	@Get('/hubs/continueWatching')
+	async continueWatching(@User() user: MyPlexUser, @Headers('x-plex-token') plexToken: string, @IsXML() isXML: boolean) {
+		const items = await this.metadataService.getContinueWatching(user, plexToken);
+
+		return {
+			MediaContainer: new MediaContainer({
+				identifier: 'com.plexapp.plugins.library',
+				allowSync: true,
+				Hub: [
+					new Hub({
+						key: '/hubs/continueWatching/items',
+						hubKey: `/library/metadata/${items.map((item) => item.ratingKey).join(',')}`,
+						title: 'Continue Watching',
+						type: 'mixed',
+						hubIdentifier: 'continueWatching',
+						context: 'hub.continueWatching',
+						more: false,
+						style: 'hero',
+						[isXML ? 'Video' : 'Metadata']: items,
+					}),
+				],
+			})
+		}
+	}
+
+	@Get('/hubs/continueWatching/items')
+	async continueWatchingItems(@User() user: MyPlexUser, @Headers('x-plex-token') plexToken: string, @IsXML() isXML: boolean) {
+		const items = await this.metadataService.getContinueWatching(user, plexToken);
+
+		return {
+			MediaContainer: new MediaContainer({
+				identifier: 'com.plexapp.plugins.library',
+				allowSync: true,
+				Metadata: items,
+			})
+		}
+	}
+
 	@Get('/hubs/metadata/:id/related')
 	hubsMetadataRelated() {
+		return {
+			MediaContainer: new MediaContainer({})
+		};
+	}
+
+	@Put('/actions/removeFromContinueWatching')
+	async removeFromContinueWatching(@Query() query: { key?: string; ratingKey?: string }, @User() user: MyPlexUser) {
+		await this.metadataService.removeFromContinueWatching(query.ratingKey ?? query.key ?? '', user);
+
 		return {
 			MediaContainer: new MediaContainer({})
 		};
@@ -136,7 +184,6 @@ export class MetadataController {
 		if (!metadata) throw new NotFoundException();
 		
 		//Forces stream resolution. This fixes an issue that prevents playback from starting when going to next item in play queue. Currently only targets web and roku, however some other clients may need this enabled as well.
-		console.log(headers, query)
 		if (
 			(
 				(clientType === ClientType.ROKU && headers['x-plex-playback-session-id']) || 
