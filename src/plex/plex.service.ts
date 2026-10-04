@@ -135,8 +135,8 @@ export class PMSService implements OnModuleInit {
 			if (itemMappingId) {
 				await db
 					.insertInto('item_mappings')
-					.values({ guid, item_id: itemMappingId })
-					.onConflict((oc) => oc.column('guid').doUpdateSet({ item_id: itemMappingId }))
+					.values({ guid, item_id: itemMappingId, url })
+					.onConflict((oc) => oc.column('guid').doUpdateSet({ item_id: itemMappingId, url }))
 					.execute();
 			}
 		}

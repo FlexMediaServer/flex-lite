@@ -11,6 +11,7 @@ import { emptyMedia, serializePlayQueues } from '../utils/plex.js';
 import { Readable } from 'node:stream';
 import { MediaContainer } from '../dto/MediaContainer.entity.js';
 import { IsXML } from '../is-xml.decorator.js';
+import { User } from '../utils/user.decorator.js';
 import { AppService } from '../app.service.js';
 import util from 'util';
 import { LoggedInGuard } from '../middleware/logged-in.guard.js';
@@ -141,7 +142,16 @@ export class PlayQueuesController {
 	}
 
 	@Get('/library/metadata/:id/userState')
-	userState() {}
+	async userState(@Param('id') ids: string, @User() user: MyPlexUser, @Headers('x-plex-token') plexToken: string) {
+		const UserState = await this.metadataService.getUserState(ids, user, plexToken);
+
+		return {
+			MediaContainer: new MediaContainer({
+				identifier: 'com.plexapp.plugins.library',
+				UserState: UserState.UserState,
+			})
+		};
+	}
 
 	@Get('/:id/timeline')
 	async timeline(
@@ -155,6 +165,7 @@ export class PlayQueuesController {
 			continuing: string;
 		} & any,
 		@Headers() headers: { 'x-plex-playback-session-id': string } & any,
+		@User() user: MyPlexUser,
 	) {
 		const playbackSessionId =
 			headers['x-plex-playback-session-id'] ||
@@ -184,15 +195,23 @@ export class PlayQueuesController {
 
 		if (query['X-Plex-Device'] === '') delete query['X-Plex-Device']
 
-		return await this.pmsService.plexServerApi('/:/timeline', {
+		const res = await this.pmsService.plexServerApi('/:/timeline', {
 			query,
 			headers
-		})
+		});
+
+		const viewOffset = parseInt(query.time);
+		if (!isNaN(viewOffset) && ['playing', 'paused'].includes(query.state)) {
+			await this.metadataService.updateProgress(item, user, { type: 'timeline', viewOffset });
+		}
+
+		return res;
 	}
 
 	@Get(['/:id/scrobble', '/:id/unscrobble'])
 	async scrobble(
 		@Req() req: any,
+		@User() user: MyPlexUser,
 		@Query()
 		query: {
 			key: string;
@@ -210,26 +229,15 @@ export class PlayQueuesController {
 		const item = await this.metadataService.getItem(query.key);
 		if (!item) throw new NotFoundException();
 
-		let localItem = (await this.pmsService.resolveLocalItem([item]))[0];
-		if (!localItem) return new NotFoundException()
-
-		query.key = localItem.key.split('/').pop()
-
-		// console.log(query)
-
-		// await this.metadataService.discoverApi('/actions/scrobble', {
-		// 	query: {
-		// 		identifier: 'tv.plex.provider.discover',
-		// 		key: query.key,
-		// 		'X-Plex-Token': headers['x-plex-token']
-		// 	},
-		// })
-
-		return await this.pmsService.plexServerApi('/:/scrobble', {
-			method: 'GET',
-			query,
-			headers
+		await this.metadataService.discoverApi(`/actions/${scrobble ? 'scrobble' : 'unscrobble'}`, {
+			query: {
+				identifier: 'tv.plex.provider.discover',
+				key: query.key,
+				'X-Plex-Token': headers['x-plex-token']
+			},
 		})
+
+		await this.metadataService.updateProgress(item, user, { type: scrobble ? 'scrobble' : 'unscrobble' });
 	}
 
 

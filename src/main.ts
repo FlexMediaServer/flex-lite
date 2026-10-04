@@ -26,7 +26,7 @@ async function bootstrap() {
 		if (path.startsWith('/dummy.mkv')) return !PROXY.enabled;
 		if (path.startsWith('/library/parts')) return !PROXY.enabled;
 		if (path.startsWith('/:/timeline')) return !PROXY.enabled;
-		if (path.startsWith('/:/scrobble')) return !PROXY.enabled;
+		if (path.startsWith('/:/scrobble') || path.startsWith('/:/unscrobble')) return !PROXY.enabled;
 		if (path.startsWith('/video/:/transcode/universal/decision')) return !PROXY.enabled;
 		if (path.startsWith('/video/:/transcode/universal/start')) return !PROXY.enabled;
 		if (path.startsWith('/media/providers')) return !PROXY.enabled;

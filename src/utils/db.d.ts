@@ -5,6 +5,7 @@ export type Generated<T> = T extends ColumnType<infer S, infer I, infer U> ? Col
 export interface ItemMappings {
 	guid: string;
 	item_id: string;
+	url: string;
 }
 
 export interface PlayQueues {
