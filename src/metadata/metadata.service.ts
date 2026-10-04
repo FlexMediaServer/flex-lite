@@ -1,4 +1,4 @@
-import { forwardRef, Inject, Injectable } from '@nestjs/common';
+import { forwardRef, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { sql } from 'kysely';
 import { normalizeQueryParams, toRequestString } from '../utils/request-values.js';
 import { ofetch, type $Fetch } from 'ofetch';
@@ -101,6 +101,187 @@ export class MetadataService {
 		}
 
 		return metadata;
+	}
+
+	/**
+	 * Builds the Continue Watching shelf for a user from the last four weeks of `progress` rows.
+	 *
+	 * Rows are grouped by show (`grandparent_guid`, falling back to the item's own `guid` for
+	 * movies) and reduced to the most recently aired entry of each group. A `view_offset` of `-1`
+	 * is a hide marker placed on the group's key row by `removeFromContinueWatching`; any later
+	 * progress update (timeline, scrobble or unscrobble) deletes it and returns the show to the
+	 * shelf. A group stays hidden only while its newest activity is no newer than the marker.
+	 *
+	 * Finished items advance to the next available episode (same season, otherwise the next
+	 * season's first episode); items with nothing left to play are omitted. In-progress items
+	 * resolve directly to their own metadata. User state (`viewOffset`, `viewCount`,
+	 * `lastViewedAt`) and `Media` are applied by `hydrateMetadata`, after which results are sorted
+	 * by most recently viewed.
+	 */
+	async getContinueWatching(user: MyPlexUser, plexToken?: string): Promise<Metadata[]> {
+		if (!user?.id) return [];
+
+		const fourWeeksAgo = Math.floor(Date.now() / 1000) - 4 * 7 * 24 * 60 * 60;
+
+		const rows = await db
+			.selectFrom('progress')
+			.select(['guid', 'grandparent_guid', 'index', 'parent_index', 'view_offset', 'view_count', 'created_at', 'updated_at'])
+			.where('account_id', '=', user.id)
+			.where((eb) => eb.or([eb('created_at', '>=', fourWeeksAgo), eb('updated_at', '>=', fourWeeksAgo)]))
+			.execute();
+
+		const groupKeyOf = (row: (typeof rows)[number]) => row.grandparent_guid ?? row.guid;
+		const isHideMarker = (row: (typeof rows)[number]) => row.view_count === -1;
+
+		//A -1 marker row on a show's (or movie's) own guid hides the group until something newer is watched.
+		const hiddenAt = new Map<string, number>();
+		const newestActivity = new Map<string, number>();
+		for (const row of rows) {
+			const groupKey = groupKeyOf(row);
+			if (!groupKey) continue;
+
+			if (isHideMarker(row)) {
+				hiddenAt.set(groupKey, Math.max(hiddenAt.get(groupKey) ?? 0, row.updated_at ?? 0));
+			} else {
+				newestActivity.set(groupKey, Math.max(newestActivity.get(groupKey) ?? 0, row.updated_at ?? 0, row.created_at ?? 0));
+			}
+		}
+
+		//Keep the most recently aired entry of each show, i.e. the newest season/episode.
+		const groups = new Map<string, (typeof rows)[number]>();
+		for (const row of rows) {
+			if (isHideMarker(row)) continue;
+
+			const groupKey = groupKeyOf(row);
+			if (!groupKey) continue;
+
+			const hidden = hiddenAt.get(groupKey);
+			if (hidden !== undefined && hidden >= (newestActivity.get(groupKey) ?? 0)) continue;
+
+			const current = groups.get(groupKey);
+			const score = (entry: (typeof rows)[number]) => [entry.parent_index ?? -1, entry.index ?? -1];
+
+			const [rowSeason, rowEpisode] = score(row);
+			const [currentSeason, currentEpisode] = current ? score(current) : [-1, -1];
+
+			if (!current || rowSeason > currentSeason || (rowSeason === currentSeason && rowEpisode > currentEpisode)) {
+				groups.set(groupKey, row);
+			}
+		}
+
+		const entries = await Promise.all(
+			[...groups.values()]
+				.sort((a, b) => Math.max(b.updated_at ?? 0, b.created_at ?? 0) - Math.max(a.updated_at ?? 0, a.created_at ?? 0))
+				.map(async (row) => {
+					const completed = (row.view_count ?? 0) > 0;
+					const showId = row.grandparent_guid?.split('/').pop();
+
+					let item: Metadata | null;
+					if (completed) {
+						//Finished items roll forward to the next unwatched episode.
+						item =
+							row.parent_index !== null && showId
+								? ((await this.getEpisodeByIndex(showId, row.parent_index, (row.index ?? 0) + 1)) ??
+									(await this.getEpisodeByIndex(showId, row.parent_index + 1, 1)))
+								: null;
+					} else {
+						item = await this.getItem(row.guid.split('/').pop()!);
+					}
+
+					return item ? { item, row } : null;
+				}),
+		);
+
+		const resolved = entries.filter((entry): entry is { item: Metadata; row: (typeof rows)[number] } => !!entry);
+
+		await this.hydrateMetadata(resolved.map(({ item }) => item), user, plexToken);
+
+		return resolved
+			.map(({ item, row }) => {
+				if (item.lastViewedAt === undefined) {
+					item.lastViewedAt = Math.max(item.addedAt ?? 0, row.created_at ?? 0, row.updated_at ?? 0);
+				}
+
+				//Skip items that haven't aired yet.
+				if (item.originallyAvailableAt && new Date(item.originallyAvailableAt.replaceAll('-', '/')) > new Date()) return null;
+
+				return item;
+			})
+			.filter((item): item is Metadata => !!item)
+			.sort((a, b) => (b.lastViewedAt ?? 0) - (a.lastViewedAt ?? 0));
+	}
+
+	/**
+	 * Hides an item from Continue Watching, mirroring Plex's `/actions/removeFromContinueWatching`.
+	 *
+	 * Writes a `view_offset` of `-1` marker on the row Continue Watching groups the item under:
+	 * the show itself for episodes (via `grandparentRatingKey`), otherwise the item's own row. For
+	 * a movie that also clears its playback position. Episode-level progress is left untouched, so
+	 * the show reappears on the shelf the next time one of its episodes is played.
+	 */
+	async removeFromContinueWatching(ratingKey: string, user: MyPlexUser): Promise<void> {
+		if (!user?.id || !ratingKey) return;
+
+		const item = await this.getItem(ratingKey.split('/').pop()!);
+		if (!item) throw new NotFoundException(`Unable to find metadata for ${ratingKey}`);
+
+		//The shelf's group key is the show for episodes, otherwise the item itself.
+		const groupRatingKey = item.grandparentRatingKey ?? (item.type === 'season' ? item.parentRatingKey : undefined) ?? item.ratingKey;
+		const targetId = groupRatingKey.split('/').pop()!;
+		const target = targetId === item.ratingKey.split('/').pop() ? item : await this.getItem(targetId);
+		if (!target?.guid) throw new NotFoundException(`Unable to find metadata for ${targetId}`);
+
+		const now = Math.floor(Date.now() / 1000);
+
+		await db
+			.insertInto('progress')
+			.values({
+				account_id: user.id,
+				guid: target.guid,
+				grandparent_guid: target.type === 'show' ? target.guid : null,
+				index: null,
+				parent_index: null,
+				view_count: -1,
+				view_offset: 0,
+				last_viewed_at: null,
+				updated_at: now,
+			})
+			.onConflict((oc) =>
+				oc
+					.columns(['account_id', 'guid'])
+					.doUpdateSet({
+						grandparent_guid: target.type === 'show' ? target.guid : null,
+						index: null,
+						parent_index: null,
+						view_count: -1,
+						view_offset: 0,
+						last_viewed_at: null,
+						updated_at: now,
+					}),
+			)
+			.execute();
+	}
+
+	/**
+	 * Resolves an episode by show id plus season/episode numbers. Episodes are the season's leaf
+	 * children, so the season lookup can exclude leaves while the episode lookup must not.
+	 */
+	private async getEpisodeByIndex(showId: string, season: number, index: number): Promise<Metadata | null> {
+		try {
+			const seasons = await this.getItemChildren(showId);
+			const seasonId = seasons?.find((item) => item.type === 'season' && item.index === season)?.ratingKey?.split('/').pop();
+			if (!seasonId) return null;
+
+			const episodes = (
+				await this.discoverApi<{ MediaContainer?: { Metadata?: Metadata[] } }>(`/library/metadata/${seasonId}/children`, {
+					query: { 'X-Plex-Container-Size': 500 },
+				})
+			)?.MediaContainer?.Metadata ?? [];
+
+			return episodes.find((episode) => episode.index === index) ?? null;
+		} catch {
+			return null;
+		}
 	}
 
 	@Cron(CronExpression.EVERY_12_HOURS)
@@ -287,6 +468,18 @@ export class MetadataService {
 					}),
 			)
 			.execute();
+
+		//Playing any episode clears the show's Continue Watching hide marker; the item's own row is
+		//already overwritten by the upsert above.
+		const showGuid = item.grandparentGuid ?? (item.type === 'season' ? item.parentGuid : undefined);
+		if (showGuid && showGuid !== guid) {
+			await db
+				.deleteFrom('progress')
+				.where('account_id', '=', user.id)
+				.where('guid', '=', showGuid)
+				.where('view_count', '=', -1)
+				.execute();
+		}
 	}
 
 	private async upsertMetadataEntry(params: {
