@@ -1,5 +1,6 @@
 import { forwardRef, Inject, Injectable } from '@nestjs/common';
-import { normalizeQueryParams } from '../utils/request-values.js';
+import { sql } from 'kysely';
+import { normalizeQueryParams, toRequestString } from '../utils/request-values.js';
 import { ofetch, type $Fetch } from 'ofetch';
 import { cache, db, isSqlite } from '../utils/database.js';
 import { Metadata } from '../dto/Metadata.entity.js';
@@ -35,7 +36,7 @@ export class MetadataService {
 				// 'X-Plex-Model': 'standalone',
 				// 'X-Plex-Device': 'Windows',
 				// 'X-Plex-Device-Screen-Resolution': '1055x1066,2195x1235',
-				'X-Plex-Token': this.pmsService.plexToken,
+				'X-Plex-Token': toRequestString((options.query as any)?.['X-Plex-Token']) ?? this.pmsService.plexToken,
 				// 'X-Plex-Provider-Version': '7.2',
 				// 'X-Plex-Text-Format': 'plain',
 				// 'X-Plex-Drm': 'widevine',
@@ -49,16 +50,16 @@ export class MetadataService {
 	 *
 	 * - Movies and episodes get their `Media` populated from the local Plex server via a single
 	 *   batched `resolveLocalItem` fetch (items without a local mapping keep their existing value).
-	 * - Shows and seasons get their `leafCount` reduced by the user's watched episode count
-	 *   (progress rows with `view_count > 0`), clamped at zero. Show progress is keyed by
-	 *   `grandparent_guid`; season progress additionally matches on `parent_index` vs the season's `index`.
-	 * - All items present in the `progress` table for this user get `viewOffset`, `viewCount`,
-	 *   `lastViewedAt` and `userState` set so clients render them as in-progress.
+	 * - All items get their user state applied from `getUserState` (Plex state merged with the
+	 *   local `progress` table, local taking precedence): episodes/movies receive `viewOffset`,
+	 *   `viewCount`, `lastViewedAt` and `userState`, while shows/seasons receive `viewedLeafCount`
+	 *   and have their `leafCount` reduced by it, clamped at zero.
 	 *
 	 * Requires an authenticated user (`user.id`) for the progress portions; without one only
-	 * `Media` hydration runs.
+	 * `Media` hydration runs. Pass the active request's `plexToken` so the remote user state is
+	 * fetched as the requesting user rather than the server's own account.
 	 */
-	async hydrateMetadata (metadata: Metadata[], user: MyPlexUser): Promise<Metadata[]> {
+	async hydrateMetadata (metadata: Metadata[], user: MyPlexUser, plexToken?: string): Promise<Metadata[]> {
 		if (!metadata.length) return metadata;
 
 		//Populate Media using a single batched metadata fetch.
@@ -72,88 +73,31 @@ export class MetadataService {
 
 		if (!user?.id) return metadata;
 
-		//Subtract watched episodes from the leaf count of shows and seasons.
-		const showGuids = [...new Set(
+		//Progress and watched leaf counts come from the merged Plex/local user state.
+		const ratingKeys = [...new Set(
 			metadata
-				.filter((item) => item.type === 'show' && !!item.guid)
-				.map((item) => item.guid as string),
+				.map((item) => item.ratingKey?.split('/').pop())
+				.filter((ratingKey): ratingKey is string => !!ratingKey),
 		)];
 
-		const watchedByShow = new Map<string, number>(
-			(
-				showGuids.length
-					? await db
-						.selectFrom('progress')
-						.select('grandparent_guid')
-						.select((eb) => eb.fn.countAll().as('count'))
-						.where('account_id', '=', user.id)
-						.where('grandparent_guid', 'in', showGuids)
-						.where('view_count', '>', 0)
-						.groupBy('grandparent_guid')
-						.execute()
-					: []
-			).map((row) => [row.grandparent_guid as string, Number(row.count)]),
-		);
+		if (!ratingKeys.length) return metadata;
 
-		//Season progress is keyed by the show's GUID plus the season's index.
-		const seasonShowGuids = [...new Set(
-			metadata
-				.filter((item) => item.type === 'season' && !!item.parentGuid && item.index !== undefined)
-				.map((item) => item.parentGuid),
-		)];
+		const { UserState } = await this.getUserState(ratingKeys.join(','), user, plexToken);
 
-		const watchedBySeason = new Map<string, number>(
-			(
-				seasonShowGuids.length
-					? await db
-						.selectFrom('progress')
-						.select(['grandparent_guid', 'parent_index'])
-						.select((eb) => eb.fn.countAll().as('count'))
-						.where('account_id', '=', user.id)
-						.where('grandparent_guid', 'in', seasonShowGuids)
-						.where('view_count', '>', 0)
-						.groupBy(['grandparent_guid', 'parent_index'])
-						.execute()
-					: []
-			).map((row) => [`${row.grandparent_guid}/${row.parent_index}`, Number(row.count)]),
-		);
+		const stateByRatingKey = new Map(UserState.map((state) => [state.ratingKey, state]));
 
 		for (const item of metadata) {
-			if (item.leafCount === undefined) continue;
+			const state = item.ratingKey ? stateByRatingKey.get(item.ratingKey.split('/').pop()) : undefined;
+			if (!state) continue;
 
-			let watchedCount = 0;
-			if (item.type === 'show' && item.guid) watchedCount = watchedByShow.get(item.guid) ?? 0;
-			if (item.type === 'season' && item.parentGuid && item.index !== undefined) watchedCount = watchedBySeason.get(`${item.parentGuid}/${item.index}`) ?? 0;
-
-			if (watchedCount) item.leafCount = Math.max(0, item.leafCount - watchedCount);
-		}
-
-		const guids = [...new Set(
-			metadata
-				.map((item) => item.guid)
-				.filter((guid): guid is string => !!guid),
-		)];
-
-		if (!guids.length) return metadata;
-
-		// Kysely expands the `in` array into bind parameters automatically.
-		const progressRows = await db
-			.selectFrom('progress')
-			.select(['guid', 'view_count', 'view_offset', 'last_viewed_at'])
-			.where('account_id', '=', user.id)
-			.where('guid', 'in', guids)
-			.execute();
-
-		const progressByGuid = new Map(progressRows.map((row) => [row.guid, row]));
-
-		for (const item of metadata) {
-			const progress = item.guid ? progressByGuid.get(item.guid) : undefined;
-			if (!progress) continue;
-
-			item.viewOffset = progress.view_offset ?? undefined;
-			item.viewCount = progress.view_count ?? 0;
-			item.lastViewedAt = progress.last_viewed_at ?? undefined;
+			item.viewOffset = state.viewOffset ?? undefined;
+			item.viewCount = state.viewCount ?? 0;
+			item.lastViewedAt = state.lastViewedAt ?? undefined;
 			item.userState = true;
+
+			if (state.viewedLeafCount) {
+				item.viewedLeafCount = state.viewedLeafCount;
+			}
 		}
 
 		return metadata;
@@ -291,6 +235,60 @@ export class MetadataService {
 		return item;
 	}
 	
+	/**
+	 * Records playback state for an item in the local `progress` table, upserting on its
+	 * (`account_id`, `guid`) unique constraint.
+	 *
+	 * - `scrobble` increments `view_count` and stamps `last_viewed_at`, resetting `view_offset`
+	 *   since a scrobble only happens at the end of an item.
+	 * - `unscrobble` clears `view_count` and `last_viewed_at`.
+	 * - `timeline` stores the current `viewOffset` (milliseconds) and stamps `last_viewed_at`,
+	 *   leaving `view_count` alone on update and at `0` when the row does not exist yet.
+	 *
+	 * The show/season identifiers are taken from the item so watched leaves stay attributable to
+	 * the right show (`grandparent_guid`) and season (`parent_index`) for `viewedLeafCount`.
+	 */
+	async updateProgress(
+		item: Metadata,
+		user: MyPlexUser,
+		update: { type: 'scrobble' } | { type: 'unscrobble' } | { type: 'timeline'; viewOffset: number } = { type: 'scrobble' },
+	): Promise<void> {
+		const guid = item?.guid;
+		if (!user?.id || !guid) return;
+
+		const now = Math.floor(Date.now() / 1000);
+		const isTimeline = update.type === 'timeline';
+		const scrobble = update.type === 'scrobble';
+
+		await db
+			.insertInto('progress')
+			.values({
+				account_id: user.id,
+				guid,
+				grandparent_guid: item.grandparentGuid ?? null,
+				index: item.index ?? null,
+				parent_index: item.parentIndex ?? null,
+				view_count: isTimeline ? 0 : scrobble ? 1 : 0,
+				view_offset: isTimeline ? update.viewOffset : 0,
+				last_viewed_at: scrobble || isTimeline ? now : null,
+				updated_at: now,
+			})
+			.onConflict((oc) =>
+				oc
+					.columns(['account_id', 'guid'])
+					.doUpdateSet({
+						grandparent_guid: item.grandparentGuid ?? null,
+						index: item.index ?? null,
+						parent_index: item.parentIndex ?? null,
+						...(isTimeline ? {} : { view_count: scrobble ? sql<number>`view_count + 1` : 0 }),
+						view_offset: isTimeline ? update.viewOffset : 0,
+						last_viewed_at: scrobble || isTimeline ? now : null,
+						updated_at: now,
+					}),
+			)
+			.execute();
+	}
+
 	private async upsertMetadataEntry(params: {
 		id: string;
 		imdbId?: string | null;
@@ -342,6 +340,162 @@ export class MetadataService {
 				})
 				.execute();
 		}
+	}
+
+	/**
+	 * Fetches user state for comma separated rating keys from the Discover API and merges it with
+	 * the local `progress` table. Local state takes precedence over Plex's, except when Plex's
+	 * `lastViewedAt` is newer, in which case the remote state wins.
+	 *
+	 * For shows and seasons, a `viewedLeafCount` is computed from the watched leaves (progress
+	 * rows with `view_count > 0` plus remotely completed leaves) merged and deduplicated by guid.
+	 * Show counts match on `grandparent_guid`; season counts additionally match `parent_index`
+	 * against the season's `index`. Remote `viewedLeafCount` values are honored via `Math.max`.
+	 *
+	 * `plexToken` should be the active request's token so the remote state belongs to the
+	 * requesting user; it falls back to the server's own token when omitted.
+	 */
+	async getUserState(ids: string, user: MyPlexUser, plexToken?: string): Promise<{ UserState: PlexUserState[] }> {
+		const ratingKeys = ids.split(',').filter((id) => !!id);
+
+		if (!ratingKeys.length) return { UserState: [] };
+
+		const remoteStates: PlexUserState[] =
+			(
+				await this.discoverApi<{ MediaContainer?: { UserState?: PlexUserState[] } }>(
+					`/library/metadata/${encodeURIComponent(ids)}/userState`,
+					{ query: plexToken ? { 'X-Plex-Token': plexToken } : undefined },
+				)
+			)?.MediaContainer?.UserState ?? [];
+
+		const remoteByRatingKey = new Map<string | undefined, PlexUserState>(remoteStates.map((state) => [state.ratingKey, state]));
+
+		const dataById = new Map<string, any>(
+			(
+				await db
+					.selectFrom('metadata')
+					.select(['id', 'data'])
+					.where('id', 'in', ratingKeys)
+					.execute()
+			)
+				.map((record) => [record.id, typeof record.data === 'string' ? JSON.parse(record.data) : record.data] as const),
+		);
+
+		const guidToRatingKey = new Map<string, string>();
+
+		for (const [id, data] of dataById) {
+			if (data?.guid) guidToRatingKey.set(data.guid, id);
+		}
+
+		const leafGuids = [...guidToRatingKey.keys()];
+
+		//Watched episode counts for shows/seasons need every progress row under the shows in play.
+		const containerShowGuids = [...new Set(
+			[...dataById.values()]
+				.filter((data) => data?.type === 'show' || data?.type === 'season')
+				.map((data) => (data.type === 'show' ? data.guid : data.parentGuid) as string)
+				.filter((guid): guid is string => !!guid),
+		)];
+
+		const watchedLeaves = new Map<string, { grandparentGuid?: string | null; parentIndex?: number | null }>();
+		const localByRatingKey = new Map<string | undefined, PlexUserState>();
+
+		if (user?.id && (leafGuids.length || containerShowGuids.length)) {
+			const rows = await db
+				.selectFrom('progress')
+				.select(['guid', 'grandparent_guid', 'parent_index', 'view_count', 'view_offset', 'last_viewed_at'])
+				.where('account_id', '=', user.id)
+				.where((eb) =>
+					leafGuids.length && containerShowGuids.length
+						? eb.or([eb('guid', 'in', leafGuids), eb('grandparent_guid', 'in', containerShowGuids)])
+						: leafGuids.length
+							? eb('guid', 'in', leafGuids)
+							: eb('grandparent_guid', 'in', containerShowGuids),
+				)
+				.execute();
+
+			for (const row of rows) {
+				if ((row.view_count ?? 0) > 0) {
+					watchedLeaves.set(row.guid, { grandparentGuid: row.grandparent_guid, parentIndex: row.parent_index });
+				}
+
+				const ratingKey = guidToRatingKey.get(row.guid);
+				if (!ratingKey) continue;
+
+				localByRatingKey.set(ratingKey, {
+					ratingKey,
+					viewCount: row.view_count ?? 0,
+					viewOffset: row.view_offset ?? 0,
+					lastViewedAt: row.last_viewed_at ?? undefined,
+					viewState: (row.view_count ?? 0) > 0 ? 'complete' : undefined,
+				});
+			}
+		}
+
+		//Remotely completed leaves count as watched even without local progress rows.
+		for (const state of remoteStates) {
+			if (!state.ratingKey || !((state.viewCount ?? 0) > 0 || state.viewState === 'complete')) continue;
+
+			const data = dataById.get(state.ratingKey);
+			if (!data?.guid || watchedLeaves.has(data.guid)) continue;
+
+			watchedLeaves.set(data.guid, { grandparentGuid: data.grandparentGuid, parentIndex: data.parentIndex });
+		}
+
+		const watchedByShow = new Map<string, { total: number; bySeason: Map<number, number> }>();
+
+		for (const leaf of watchedLeaves.values()) {
+			if (!leaf.grandparentGuid) continue;
+
+			let entry = watchedByShow.get(leaf.grandparentGuid);
+			if (!entry) watchedByShow.set(leaf.grandparentGuid, (entry = { total: 0, bySeason: new Map() }));
+
+			entry.total++;
+			if (leaf.parentIndex !== undefined && leaf.parentIndex !== null) {
+				entry.bySeason.set(leaf.parentIndex, (entry.bySeason.get(leaf.parentIndex) ?? 0) + 1);
+			}
+		}
+
+		//Attach computed viewedLeafCount to show/season entries, keeping any larger remote count.
+		for (const [id, data] of dataById) {
+			if (data?.type !== 'show' && data?.type !== 'season') continue;
+
+			const showGuid = data.type === 'show' ? data.guid : data.parentGuid;
+			const counts = showGuid ? watchedByShow.get(showGuid) : undefined;
+			const computed = data.type === 'show'
+				? counts?.total ?? 0
+				: data.index !== undefined && data.index !== null
+					? counts?.bySeason.get(data.index) ?? 0
+					: 0;
+
+			const remoteCount = remoteByRatingKey.get(id)?.viewedLeafCount;
+			const viewedLeafCount = Math.max(computed, remoteCount ?? 0);
+
+			if (!viewedLeafCount) continue;
+
+			localByRatingKey.set(id, { ...localByRatingKey.get(id), ratingKey: id, viewedLeafCount });
+		}
+
+		const UserState = [
+			...new Set([...remoteByRatingKey.keys(), ...localByRatingKey.keys()]),
+		]
+			.map((ratingKey) => {
+				const remote = remoteByRatingKey.get(ratingKey);
+				const local = localByRatingKey.get(ratingKey);
+
+				if (!remote || !local) return remote ?? local ?? null;
+
+				//Local progress wins unless Plex has something more recent.
+				const merged = (remote.lastViewedAt ?? 0) > (local.lastViewedAt ?? 0)
+					? { ...local, ...remote }
+					: { ...remote, ...local };
+
+				//Already the larger of the locally computed and remote leaf counts.
+				return { ...merged, viewedLeafCount: local.viewedLeafCount ?? remote.viewedLeafCount };
+			})
+			.filter((state): state is PlexUserState => !!state);
+
+		return { UserState };
 	}
 
 	async getItem(id: string, noCache = false): Promise<Metadata | null> {
