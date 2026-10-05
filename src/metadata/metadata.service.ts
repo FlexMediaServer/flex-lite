@@ -81,7 +81,7 @@ export class MetadataService {
 
 		for (const item of metadata) {
 			item.userState = true;
-			
+
 			const state = item.ratingKey ? stateByRatingKey.get(item.ratingKey.split('/').pop()) : undefined;
 			if (!state) continue;
 
@@ -125,6 +125,7 @@ export class MetadataService {
 			.select(['guid', 'parent_guid', 'grandparent_guid', 'index', 'parent_index', 'view_offset', 'view_count', 'created_at', 'updated_at'])
 			.where('account_id', '=', user.id)
 			.where((eb) => eb.or([eb('created_at', '>=', fourWeeksAgo), eb('updated_at', '>=', fourWeeksAgo)]))
+			.limit(100)
 			.execute();
 
 		//A row's shelf group: its show, or the show its season belongs to, or itself for movies.
@@ -200,8 +201,8 @@ export class MetadataService {
 
 					let item: Metadata | null | undefined;
 					if (plexItem?.type === 'season' || plexItem?.type === 'episode') {
-						item = await this.getNextEpisode(plexItem);
-						console.log(item);
+						if (row.view_offset as number > 0) item = plexItem
+						else if (row.view_count as number > 0) item = await this.getNextEpisode(plexItem);
 					} else {
 						item = plexItem;
 					}
@@ -243,13 +244,10 @@ export class MetadataService {
 			if (!episode) return null;
 			return episode[0];
 		} else if (item.type === 'episode') {
-			console.log(item.parentRatingKey)
 			let episodes = await this.getItemChildren(item.parentRatingKey, 100, 0);
-			console.log('episode', episodes)
 			if (!episodes) return null;
 
 			let episode = episodes.find((episode) =>  episode.index === item.index as number + 1)
-			console.log('episode', episode)
 			if (episode) return episode;
 
 			let nextSeason = await this.getNextSeason(item);
@@ -265,18 +263,6 @@ export class MetadataService {
 		return nextSeason;
 	}
 
-	// async getItemByIndex(grandparent_key: string, parent_index: number, index: number): Promise<Metadata | null | undefined> {
-	// 	const seasons = await this.getItemChildren(grandparent_key);
-	// 	if (!seasons) return null;
-
-	// 	const season = seasons.find((s) => s.index === parent_index);
-	// 	if (!season) return null;
-
-	// 	const episodes = await this.getItemChildren(season.ratingKey);
-	// 	if (!episodes) return null;
-
-	// 	return episodes.find((episode) => episode.index === index);
-	// }
 
 	/**
 	 * Hides an item from Continue Watching, mirroring Plex's `/actions/removeFromContinueWatching`.
@@ -328,71 +314,6 @@ export class MetadataService {
 					}),
 			)
 			.execute();
-	}
-
-	/**
-	 * Resolves the next playable episode of a show after (`season`, `episode`) by walking the
-	 * show's seasons in index order and returning the first episode after the current position
-	 * that isn't in `watchedBySeason` and hasn't aired in the future. Children are cached so a
-	 * shelf render costs at most two uncached provider calls per show instead of one per attempt.
-	 */
-	private async resolveNextEpisode(
-		showId: string,
-		season: number,
-		episode: number,
-		watchedBySeason?: Map<number, Set<number>>,
-	): Promise<Metadata | null> {
-		try {
-			const seasons = (await this.getCachedChildren(showId))?.filter((item) => item.type === 'season');
-			if (!seasons?.length) return null;
-
-			//Provider payloads may serialize indexes as strings, so compare numerically.
-			for (const seasonMeta of seasons.sort((a, b) => Number(a.index) - Number(b.index))) {
-				const seasonIndex = Number(seasonMeta.index);
-				if (seasonIndex < season) continue;
-
-				//Episodes are the season's leaves, so this lookup must not exclude them.
-				const episodes = await this.getCachedChildren(seasonMeta.ratingKey.split('/').pop()!, { 'X-Plex-Container-Size': 500 });
-				if (!episodes?.length) continue;
-
-				const watched = watchedBySeason?.get(seasonIndex);
-				const from = seasonIndex === season ? episode : -1;
-
-				const next = episodes
-					.filter((episode) => Number(episode.index) > from && !watched?.has(Number(episode.index)))
-					.filter((episode) => !episode.originallyAvailableAt || new Date(episode.originallyAvailableAt.replaceAll('-', '/')) <= new Date())
-					.sort((a, b) => Number(a.index) - Number(b.index))[0];
-
-				if (next) return next;
-			}
-
-			return null;
-		} catch {
-			return null;
-		}
-	}
-
-	/**
-	 * Children of a metadata id via the metadata provider, cached for an hour. Defaults to the
-	 * leaf-excluded directory listing used for season lookups; pass a query to fetch leaves.
-	 */
-	private async getCachedChildren(id: string, query?: Record<string, unknown>): Promise<Metadata[] | null> {
-		const cacheKey = `children:${id}:${query?.['X-Plex-Container-Size'] ?? ''}`;
-		const cached = (await cache.get(cacheKey)) as Metadata[] | undefined;
-		if (cached) return cached;
-
-		const result = await this.discoverApi<{ MediaContainer?: { Metadata?: Metadata[] } }>(`/library/metadata/${id}/children`, {
-			query: query ?? { excludeAllLeaves: 1 },
-		});
-
-		const children = result?.MediaContainer?.Metadata?.filter((item) => {
-			delete item.Media;
-			return true;
-		}) as Metadata[] | undefined;
-
-		if (children) await cache.set(cacheKey, children, 3600 * 1000);
-
-		return children ?? null;
 	}
 
 	@Cron(CronExpression.EVERY_12_HOURS)

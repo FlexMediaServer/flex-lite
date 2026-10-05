@@ -49,7 +49,7 @@ export class ScrobblingService implements OnApplicationBootstrap {
 
 	/** Runs the first sync right after boot so state is fresh before the first cron tick. */
 	onApplicationBootstrap(): void {
-		void this.syncAllUsers();
+		// void this.syncAllUsers();
 	}
 
 	async scrobble(item: Metadata, user: MyPlexUser) {
@@ -76,6 +76,9 @@ export class ScrobblingService implements OnApplicationBootstrap {
 	 *
 	 * Scrobbling or unscrobbling a season additionally clears its episodes' override rows, so the
 	 * season's own state becomes the single source of truth for the cascade.
+	 *
+	 * Scrobbling or unscrobbling a show likewise clears every row beneath it, and unscrobbling a
+	 * show or season drops its own row too, leaving no record behind rather than an empty one.
 	 *
 	 * The show/season identifiers are taken from the item so watched leaves stay attributable to
 	 * the right show (`grandparent_guid`) and season (`parent_index`) for `viewedLeafCount`.
@@ -121,22 +124,40 @@ export class ScrobblingService implements OnApplicationBootstrap {
 			)
 			.execute();
 
+		//Unscrobbling a show or season also removes its own row, so no progress record is left
+		//behind; a scrobble keeps it as the watched state the cascade flows from.
+		const deleteOwnRow = update.type === 'unscrobble';
+
 		if (item.type === 'show' && item.guid) {
+			const showGuid = item.guid;
 			await db
 				.deleteFrom('progress')
 				.where('account_id', '=', user.id)
-				.where('grandparent_guid', '=', item.guid)
+				.where((eb) =>
+					deleteOwnRow
+						? eb.or([eb('grandparent_guid', '=', showGuid), eb('guid', '=', showGuid)])
+						: eb('grandparent_guid', '=', showGuid),
+				)
 				.execute();
 		}
 
-		//Marking a season watched/unwatched clears its episodes' override rows (view_count <= 0,
+		//Marking a season watched/unscrobbled clears its episodes' override rows (view_count <= 0,
 		//including -1 markers and timeline rows) so stale overrides can't block the season cascade.
 		if (item.type === 'season' && item.parentGuid && item.index !== undefined && item.index !== null) {
+			const seasonGuid = item.guid;
+			const showGuid = item.parentGuid;
+			const seasonIndex = item.index;
 			await db
 				.deleteFrom('progress')
 				.where('account_id', '=', user.id)
-				.where('grandparent_guid', '=', item.parentGuid)
-				.where('parent_index', '=', item.index)
+				.where((eb) =>
+					deleteOwnRow && seasonGuid
+						? eb.or([
+							eb.and([eb('grandparent_guid', '=', showGuid), eb('parent_index', '=', seasonIndex)]),
+							eb('guid', '=', seasonGuid),
+						])
+						: eb.and([eb('grandparent_guid', '=', showGuid), eb('parent_index', '=', seasonIndex)]),
+				)
 				.execute();
 		}
 	}
@@ -420,6 +441,23 @@ export class ScrobblingService implements OnApplicationBootstrap {
 			});
 
 			await new Promise((resolve, reject) => setTimeout(resolve, 1000))
+
+			if (response?.items === undefined) continue;
+
+			for (let item of response.items) {
+				let plexItem = await this.metadataService.getItem(item.guid?.split('/').pop() as string)
+
+				if (item.viewState === 'complete') {
+					console.log(plexItem?.ratingKey, plexItem?.guid)
+					await this.scrobble(plexItem as Metadata, {
+						id: userId
+					})
+				} else if (item.viewState === 'unplayed') {
+					await this.unscrobble(plexItem as Metadata, {
+						id: userId
+					})
+				}
+			}
 
 			if (response?.pageInfo?.hasNextPage == false) break;
 
