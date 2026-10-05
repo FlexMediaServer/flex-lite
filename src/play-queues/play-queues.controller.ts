@@ -253,7 +253,7 @@ export class PlayQueuesController {
 
 		if (decision.MediaContainer) {
 			decision.MediaContainer.Metadata = undefined;
-			decision.MediaContainer.size = undefined;
+			delete decision.MediaContainer.size
 		}
 
 		return {
