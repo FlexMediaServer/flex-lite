@@ -5,9 +5,10 @@ import { MetadataModule } from '../metadata/metadata.module.js';
 import { StremioModule } from '../stremio/stremio.module.js';
 import { PlexModule } from '../plex/plex.module.js';
 import { AppModule } from '../app.module.js';
+import { ScrobblingModule } from '../scrobbling/scrobbling.module.js';
 
 @Module({
-  imports: [MetadataModule, StremioModule, PlexModule, forwardRef(() => AppModule)],
+  imports: [MetadataModule, StremioModule, PlexModule, ScrobblingModule, forwardRef(() => AppModule)],
   controllers: [PlayQueuesController],
   providers: [PlayQueuesService]
 })

@@ -10,11 +10,12 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { StremioService } from '../stremio/stremio.service.js';
 import type { StremioService as StremioServiceType } from '../stremio/stremio.service.js';
 import { StremioMeta } from '../stremio/stremio.js';
+import { ScrobblingService } from '../scrobbling/scrobbling.service.js';
 
 @Injectable()
 export class MetadataService {
 
-	constructor (private pmsService: PMSService, @Inject(forwardRef(() => StremioService)) private stremioService: StremioServiceType) {}
+	constructor (private pmsService: PMSService, @Inject(forwardRef(() => StremioService)) private stremioService: StremioServiceType, private scrobblingService: ScrobblingService) {}
 
 	public hubs: Hub[] = [];
 
@@ -73,27 +74,20 @@ export class MetadataService {
 
 		if (!user?.id) return metadata;
 
-		//Progress and watched leaf counts come from the merged Plex/local user state.
-		const ratingKeys = [...new Set(
-			metadata
-				.map((item) => item.ratingKey?.split('/').pop())
-				.filter((ratingKey): ratingKey is string => !!ratingKey),
-		)];
 
-		if (!ratingKeys.length) return metadata;
-
-		const { UserState } = await this.getUserState(ratingKeys.join(','), user, plexToken);
-
+		const UserState = await this.scrobblingService.getState(metadata, user);
+		
 		const stateByRatingKey = new Map(UserState.map((state) => [state.ratingKey, state]));
 
 		for (const item of metadata) {
+			item.userState = true;
+			
 			const state = item.ratingKey ? stateByRatingKey.get(item.ratingKey.split('/').pop()) : undefined;
 			if (!state) continue;
 
 			item.viewOffset = state.viewOffset ?? undefined;
 			item.viewCount = state.viewCount ?? 0;
 			item.lastViewedAt = state.lastViewedAt ?? undefined;
-			item.userState = true;
 
 			if (state.viewedLeafCount) {
 				item.viewedLeafCount = state.viewedLeafCount;
@@ -106,14 +100,17 @@ export class MetadataService {
 	/**
 	 * Builds the Continue Watching shelf for a user from the last four weeks of `progress` rows.
 	 *
-	 * Rows are grouped by show (`grandparent_guid`, falling back to the item's own `guid` for
-	 * movies) and reduced to the most recently aired entry of each group. A `view_offset` of `-1`
+	 * Rows are grouped by show (`grandparent_guid`, or a season row's `parent_guid`, falling back to
+	 * the item's own `guid` for movies) and reduced to the most recently aired entry of each group,
+	 * so a show ever yields at most one shelf item. A `view_offset` of `-1`
 	 * is a hide marker placed on the group's key row by `removeFromContinueWatching`; any later
 	 * progress update (timeline, scrobble or unscrobble) deletes it and returns the show to the
 	 * shelf. A group stays hidden only while its newest activity is no newer than the marker.
 	 *
-	 * Finished items advance to the next available episode (same season, otherwise the next
-	 * season's first episode); items with nothing left to play are omitted. In-progress items
+	 * Finished items continue from the highest watched index: the shelf walks the show's seasons in
+	 * order from the last watched one and returns the first candidate after it that is neither
+	 * watched (per the group's own rows) nor unaired; a finished season starts at the next season.
+	 * Items with nothing left to play are omitted. In-progress items
 	 * resolve directly to their own metadata. User state (`viewOffset`, `viewCount`,
 	 * `lastViewedAt`) and `Media` are applied by `hydrateMetadata`, after which results are sorted
 	 * by most recently viewed.
@@ -125,12 +122,15 @@ export class MetadataService {
 
 		const rows = await db
 			.selectFrom('progress')
-			.select(['guid', 'grandparent_guid', 'index', 'parent_index', 'view_offset', 'view_count', 'created_at', 'updated_at'])
+			.select(['guid', 'parent_guid', 'grandparent_guid', 'index', 'parent_index', 'view_offset', 'view_count', 'created_at', 'updated_at'])
 			.where('account_id', '=', user.id)
 			.where((eb) => eb.or([eb('created_at', '>=', fourWeeksAgo), eb('updated_at', '>=', fourWeeksAgo)]))
 			.execute();
 
-		const groupKeyOf = (row: (typeof rows)[number]) => row.grandparent_guid ?? row.guid;
+		//A row's shelf group: its show, or the show its season belongs to, or itself for movies.
+		const showGuidOf = (row: (typeof rows)[number]) => row.grandparent_guid ?? (row.guid.startsWith('plex://season/') ? row.parent_guid ?? undefined : undefined);
+		const seasonGuidOf = (row: (typeof rows)[number]) => row.grandparent_guid ?? (row.guid.startsWith('plex://season/') ? row.parent_guid ?? undefined : undefined);
+		const groupKeyOf = (row: (typeof rows)[number]) => showGuidOf(row) ?? row.guid;
 		const isHideMarker = (row: (typeof rows)[number]) => row.view_count === -1;
 
 		//A -1 marker row on a show's (or movie's) own guid hides the group until something newer is watched.
@@ -147,6 +147,19 @@ export class MetadataService {
 			}
 		}
 
+		//Watched episode numbers per season, per show group, taken from the group's own rows. Used to
+		//continue from the highest watched index without re-querying state per candidate.
+		const watchedBySeasonByGroup = new Map<string, Map<number, Set<number>>>();
+		for (const row of rows) {
+			if ((row.view_count ?? 0) <= 0 || row.parent_index === null || !row.grandparent_guid) continue;
+
+			const bySeason = watchedBySeasonByGroup.get(row.grandparent_guid) ?? new Map<number, Set<number>>();
+			const indexes = bySeason.get(row.parent_index) ?? new Set<number>();
+			if (row.index !== null && row.index !== undefined) indexes.add(row.index);
+			bySeason.set(row.parent_index, indexes);
+			watchedBySeasonByGroup.set(row.grandparent_guid, bySeason);
+		}
+
 		//Keep the most recently aired entry of each show, i.e. the newest season/episode.
 		const groups = new Map<string, (typeof rows)[number]>();
 		for (const row of rows) {
@@ -159,7 +172,12 @@ export class MetadataService {
 			if (hidden !== undefined && hidden >= (newestActivity.get(groupKey) ?? 0)) continue;
 
 			const current = groups.get(groupKey);
-			const score = (entry: (typeof rows)[number]) => [entry.parent_index ?? -1, entry.index ?? -1];
+
+			//A season's own row has no leaf attribution, so rank it at its own season with no episode
+			//rather than the default -1, which would let it mask newer episode rows of the group.
+			const isSeasonRow = (entry: (typeof rows)[number]) => entry.grandparent_guid === null && entry.parent_guid !== null && entry.guid.startsWith('plex://season/');
+			const score = (entry: (typeof rows)[number]) =>
+				isSeasonRow(entry) ? [entry.index ?? -1, -1] : [entry.parent_index ?? -1, entry.index ?? -1];
 
 			const [rowSeason, rowEpisode] = score(row);
 			const [currentSeason, currentEpisode] = current ? score(current) : [-1, -1];
@@ -169,28 +187,30 @@ export class MetadataService {
 			}
 		}
 
+		console.log([...groups.values()])
+
 		const entries = await Promise.all(
 			[...groups.values()]
 				.sort((a, b) => Math.max(b.updated_at ?? 0, b.created_at ?? 0) - Math.max(a.updated_at ?? 0, a.created_at ?? 0))
 				.map(async (row) => {
 					const completed = (row.view_count ?? 0) > 0;
-					const showId = row.grandparent_guid?.split('/').pop();
+					const plexItem = await this.getItem(row?.guid?.split('/')?.pop() as string)
 
-					let item: Metadata | null;
-					if (completed) {
-						//Finished items roll forward to the next unwatched episode.
-						item =
-							row.parent_index !== null && showId
-								? ((await this.getEpisodeByIndex(showId, row.parent_index, (row.index ?? 0) + 1)) ??
-									(await this.getEpisodeByIndex(showId, row.parent_index + 1, 1)))
-								: null;
+					// console.log(plexItem);
+
+					let item: Metadata | null | undefined;
+					if (plexItem?.type === 'season' || plexItem?.type === 'episode') {
+						item = await this.getNextEpisode(plexItem);
+						console.log(item);
 					} else {
-						item = await this.getItem(row.guid.split('/').pop()!);
+						item = plexItem;
 					}
 
-					return item ? { item, row } : null;
+					return item ? { item: item, row } : null;
 				}),
 		);
+
+		// const entries: any[] = [];
 
 		const resolved = entries.filter((entry): entry is { item: Metadata; row: (typeof rows)[number] } => !!entry);
 
@@ -198,6 +218,10 @@ export class MetadataService {
 
 		return resolved
 			.map(({ item, row }) => {
+				//The shelf only plays episodes and movies; rows attributed to a show/season guid
+				//resolve to container metadata and are dropped.
+				// if (item.type !== 'episode' && item.type !== 'movie') return null;
+
 				if (item.lastViewedAt === undefined) {
 					item.lastViewedAt = Math.max(item.addedAt ?? 0, row.created_at ?? 0, row.updated_at ?? 0);
 				}
@@ -210,6 +234,49 @@ export class MetadataService {
 			.filter((item): item is Metadata => !!item)
 			.sort((a, b) => (b.lastViewedAt ?? 0) - (a.lastViewedAt ?? 0));
 	}
+
+	async getNextEpisode (item: Metadata) {
+		if (item.type === 'season') {
+			let nextSeason = await this.getNextSeason(item);
+			if (!nextSeason) return null;
+			let episode = await this.getItemChildren(nextSeason?.ratingKey as string, 1, 0);
+			if (!episode) return null;
+			return episode[0];
+		} else if (item.type === 'episode') {
+			console.log(item.parentRatingKey)
+			let episodes = await this.getItemChildren(item.parentRatingKey, 100, 0);
+			console.log('episode', episodes)
+			if (!episodes) return null;
+
+			let episode = episodes.find((episode) =>  episode.index === item.index as number + 1)
+			console.log('episode', episode)
+			if (episode) return episode;
+
+			let nextSeason = await this.getNextSeason(item);
+			if (!nextSeason) return null;
+			return (await this.getItemChildren(nextSeason?.ratingKey as string, 1, 0))?.[0];
+		}
+	}
+
+	async getNextSeason (item: Metadata): Promise<Metadata | undefined> {
+		let seasons = await this.getItemChildren(item.type === 'season' ? item.parentRatingKey : item.grandparentRatingKey, 100, 0);
+		if (!seasons) return undefined;
+		let nextSeason = seasons.find((s) => s.index === item.index as number + 1);
+		return nextSeason;
+	}
+
+	// async getItemByIndex(grandparent_key: string, parent_index: number, index: number): Promise<Metadata | null | undefined> {
+	// 	const seasons = await this.getItemChildren(grandparent_key);
+	// 	if (!seasons) return null;
+
+	// 	const season = seasons.find((s) => s.index === parent_index);
+	// 	if (!season) return null;
+
+	// 	const episodes = await this.getItemChildren(season.ratingKey);
+	// 	if (!episodes) return null;
+
+	// 	return episodes.find((episode) => episode.index === index);
+	// }
 
 	/**
 	 * Hides an item from Continue Watching, mirroring Plex's `/actions/removeFromContinueWatching`.
@@ -238,7 +305,8 @@ export class MetadataService {
 			.values({
 				account_id: user.id,
 				guid: target.guid,
-				grandparent_guid: target.type === 'show' ? target.guid : null,
+				parent_guid: target.parentGuid,
+				grandparent_guid: target.grandparentGuid,
 				index: null,
 				parent_index: null,
 				view_count: -1,
@@ -263,25 +331,68 @@ export class MetadataService {
 	}
 
 	/**
-	 * Resolves an episode by show id plus season/episode numbers. Episodes are the season's leaf
-	 * children, so the season lookup can exclude leaves while the episode lookup must not.
+	 * Resolves the next playable episode of a show after (`season`, `episode`) by walking the
+	 * show's seasons in index order and returning the first episode after the current position
+	 * that isn't in `watchedBySeason` and hasn't aired in the future. Children are cached so a
+	 * shelf render costs at most two uncached provider calls per show instead of one per attempt.
 	 */
-	private async getEpisodeByIndex(showId: string, season: number, index: number): Promise<Metadata | null> {
+	private async resolveNextEpisode(
+		showId: string,
+		season: number,
+		episode: number,
+		watchedBySeason?: Map<number, Set<number>>,
+	): Promise<Metadata | null> {
 		try {
-			const seasons = await this.getItemChildren(showId);
-			const seasonId = seasons?.find((item) => item.type === 'season' && item.index === season)?.ratingKey?.split('/').pop();
-			if (!seasonId) return null;
+			const seasons = (await this.getCachedChildren(showId))?.filter((item) => item.type === 'season');
+			if (!seasons?.length) return null;
 
-			const episodes = (
-				await this.discoverApi<{ MediaContainer?: { Metadata?: Metadata[] } }>(`/library/metadata/${seasonId}/children`, {
-					query: { 'X-Plex-Container-Size': 500 },
-				})
-			)?.MediaContainer?.Metadata ?? [];
+			//Provider payloads may serialize indexes as strings, so compare numerically.
+			for (const seasonMeta of seasons.sort((a, b) => Number(a.index) - Number(b.index))) {
+				const seasonIndex = Number(seasonMeta.index);
+				if (seasonIndex < season) continue;
 
-			return episodes.find((episode) => episode.index === index) ?? null;
+				//Episodes are the season's leaves, so this lookup must not exclude them.
+				const episodes = await this.getCachedChildren(seasonMeta.ratingKey.split('/').pop()!, { 'X-Plex-Container-Size': 500 });
+				if (!episodes?.length) continue;
+
+				const watched = watchedBySeason?.get(seasonIndex);
+				const from = seasonIndex === season ? episode : -1;
+
+				const next = episodes
+					.filter((episode) => Number(episode.index) > from && !watched?.has(Number(episode.index)))
+					.filter((episode) => !episode.originallyAvailableAt || new Date(episode.originallyAvailableAt.replaceAll('-', '/')) <= new Date())
+					.sort((a, b) => Number(a.index) - Number(b.index))[0];
+
+				if (next) return next;
+			}
+
+			return null;
 		} catch {
 			return null;
 		}
+	}
+
+	/**
+	 * Children of a metadata id via the metadata provider, cached for an hour. Defaults to the
+	 * leaf-excluded directory listing used for season lookups; pass a query to fetch leaves.
+	 */
+	private async getCachedChildren(id: string, query?: Record<string, unknown>): Promise<Metadata[] | null> {
+		const cacheKey = `children:${id}:${query?.['X-Plex-Container-Size'] ?? ''}`;
+		const cached = (await cache.get(cacheKey)) as Metadata[] | undefined;
+		if (cached) return cached;
+
+		const result = await this.discoverApi<{ MediaContainer?: { Metadata?: Metadata[] } }>(`/library/metadata/${id}/children`, {
+			query: query ?? { excludeAllLeaves: 1 },
+		});
+
+		const children = result?.MediaContainer?.Metadata?.filter((item) => {
+			delete item.Media;
+			return true;
+		}) as Metadata[] | undefined;
+
+		if (children) await cache.set(cacheKey, children, 3600 * 1000);
+
+		return children ?? null;
 	}
 
 	@Cron(CronExpression.EVERY_12_HOURS)
@@ -416,71 +527,6 @@ export class MetadataService {
 		return item;
 	}
 	
-	/**
-	 * Records playback state for an item in the local `progress` table, upserting on its
-	 * (`account_id`, `guid`) unique constraint.
-	 *
-	 * - `scrobble` increments `view_count` and stamps `last_viewed_at`, resetting `view_offset`
-	 *   since a scrobble only happens at the end of an item.
-	 * - `unscrobble` clears `view_count` and `last_viewed_at`.
-	 * - `timeline` stores the current `viewOffset` (milliseconds) and stamps `last_viewed_at`,
-	 *   leaving `view_count` alone on update and at `0` when the row does not exist yet.
-	 *
-	 * The show/season identifiers are taken from the item so watched leaves stay attributable to
-	 * the right show (`grandparent_guid`) and season (`parent_index`) for `viewedLeafCount`.
-	 */
-	async updateProgress(
-		item: Metadata,
-		user: MyPlexUser,
-		update: { type: 'scrobble' } | { type: 'unscrobble' } | { type: 'timeline'; viewOffset: number } = { type: 'scrobble' },
-	): Promise<void> {
-		const guid = item?.guid;
-		if (!user?.id || !guid) return;
-
-		const now = Math.floor(Date.now() / 1000);
-		const isTimeline = update.type === 'timeline';
-		const scrobble = update.type === 'scrobble';
-
-		await db
-			.insertInto('progress')
-			.values({
-				account_id: user.id,
-				guid,
-				grandparent_guid: item.grandparentGuid ?? null,
-				index: item.index ?? null,
-				parent_index: item.parentIndex ?? null,
-				view_count: isTimeline ? 0 : scrobble ? 1 : 0,
-				view_offset: isTimeline ? update.viewOffset : 0,
-				last_viewed_at: scrobble || isTimeline ? now : null,
-				updated_at: now,
-			})
-			.onConflict((oc) =>
-				oc
-					.columns(['account_id', 'guid'])
-					.doUpdateSet({
-						grandparent_guid: item.grandparentGuid ?? null,
-						index: item.index ?? null,
-						parent_index: item.parentIndex ?? null,
-						...(isTimeline ? {} : { view_count: scrobble ? sql<number>`view_count + 1` : 0 }),
-						view_offset: isTimeline ? update.viewOffset : 0,
-						last_viewed_at: scrobble || isTimeline ? now : null,
-						updated_at: now,
-					}),
-			)
-			.execute();
-
-		//Playing any episode clears the show's Continue Watching hide marker; the item's own row is
-		//already overwritten by the upsert above.
-		const showGuid = item.grandparentGuid ?? (item.type === 'season' ? item.parentGuid : undefined);
-		if (showGuid && showGuid !== guid) {
-			await db
-				.deleteFrom('progress')
-				.where('account_id', '=', user.id)
-				.where('guid', '=', showGuid)
-				.where('view_count', '=', -1)
-				.execute();
-		}
-	}
 
 	private async upsertMetadataEntry(params: {
 		id: string;
@@ -533,162 +579,6 @@ export class MetadataService {
 				})
 				.execute();
 		}
-	}
-
-	/**
-	 * Fetches user state for comma separated rating keys from the Discover API and merges it with
-	 * the local `progress` table. Local state takes precedence over Plex's, except when Plex's
-	 * `lastViewedAt` is newer, in which case the remote state wins.
-	 *
-	 * For shows and seasons, a `viewedLeafCount` is computed from the watched leaves (progress
-	 * rows with `view_count > 0` plus remotely completed leaves) merged and deduplicated by guid.
-	 * Show counts match on `grandparent_guid`; season counts additionally match `parent_index`
-	 * against the season's `index`. Remote `viewedLeafCount` values are honored via `Math.max`.
-	 *
-	 * `plexToken` should be the active request's token so the remote state belongs to the
-	 * requesting user; it falls back to the server's own token when omitted.
-	 */
-	async getUserState(ids: string, user: MyPlexUser, plexToken?: string): Promise<{ UserState: PlexUserState[] }> {
-		const ratingKeys = ids.split(',').filter((id) => !!id);
-
-		if (!ratingKeys.length) return { UserState: [] };
-
-		const remoteStates: PlexUserState[] =
-			(
-				await this.discoverApi<{ MediaContainer?: { UserState?: PlexUserState[] } }>(
-					`/library/metadata/${encodeURIComponent(ids)}/userState`,
-					{ query: plexToken ? { 'X-Plex-Token': plexToken } : undefined },
-				)
-			)?.MediaContainer?.UserState ?? [];
-
-		const remoteByRatingKey = new Map<string | undefined, PlexUserState>(remoteStates.map((state) => [state.ratingKey, state]));
-
-		const dataById = new Map<string, any>(
-			(
-				await db
-					.selectFrom('metadata')
-					.select(['id', 'data'])
-					.where('id', 'in', ratingKeys)
-					.execute()
-			)
-				.map((record) => [record.id, typeof record.data === 'string' ? JSON.parse(record.data) : record.data] as const),
-		);
-
-		const guidToRatingKey = new Map<string, string>();
-
-		for (const [id, data] of dataById) {
-			if (data?.guid) guidToRatingKey.set(data.guid, id);
-		}
-
-		const leafGuids = [...guidToRatingKey.keys()];
-
-		//Watched episode counts for shows/seasons need every progress row under the shows in play.
-		const containerShowGuids = [...new Set(
-			[...dataById.values()]
-				.filter((data) => data?.type === 'show' || data?.type === 'season')
-				.map((data) => (data.type === 'show' ? data.guid : data.parentGuid) as string)
-				.filter((guid): guid is string => !!guid),
-		)];
-
-		const watchedLeaves = new Map<string, { grandparentGuid?: string | null; parentIndex?: number | null }>();
-		const localByRatingKey = new Map<string | undefined, PlexUserState>();
-
-		if (user?.id && (leafGuids.length || containerShowGuids.length)) {
-			const rows = await db
-				.selectFrom('progress')
-				.select(['guid', 'grandparent_guid', 'parent_index', 'view_count', 'view_offset', 'last_viewed_at'])
-				.where('account_id', '=', user.id)
-				.where((eb) =>
-					leafGuids.length && containerShowGuids.length
-						? eb.or([eb('guid', 'in', leafGuids), eb('grandparent_guid', 'in', containerShowGuids)])
-						: leafGuids.length
-							? eb('guid', 'in', leafGuids)
-							: eb('grandparent_guid', 'in', containerShowGuids),
-				)
-				.execute();
-
-			for (const row of rows) {
-				if ((row.view_count ?? 0) > 0) {
-					watchedLeaves.set(row.guid, { grandparentGuid: row.grandparent_guid, parentIndex: row.parent_index });
-				}
-
-				const ratingKey = guidToRatingKey.get(row.guid);
-				if (!ratingKey) continue;
-
-				localByRatingKey.set(ratingKey, {
-					ratingKey,
-					viewCount: row.view_count ?? 0,
-					viewOffset: row.view_offset ?? 0,
-					lastViewedAt: row.last_viewed_at ?? undefined,
-					viewState: (row.view_count ?? 0) > 0 ? 'complete' : undefined,
-				});
-			}
-		}
-
-		//Remotely completed leaves count as watched even without local progress rows.
-		for (const state of remoteStates) {
-			if (!state.ratingKey || !((state.viewCount ?? 0) > 0 || state.viewState === 'complete')) continue;
-
-			const data = dataById.get(state.ratingKey);
-			if (!data?.guid || watchedLeaves.has(data.guid)) continue;
-
-			watchedLeaves.set(data.guid, { grandparentGuid: data.grandparentGuid, parentIndex: data.parentIndex });
-		}
-
-		const watchedByShow = new Map<string, { total: number; bySeason: Map<number, number> }>();
-
-		for (const leaf of watchedLeaves.values()) {
-			if (!leaf.grandparentGuid) continue;
-
-			let entry = watchedByShow.get(leaf.grandparentGuid);
-			if (!entry) watchedByShow.set(leaf.grandparentGuid, (entry = { total: 0, bySeason: new Map() }));
-
-			entry.total++;
-			if (leaf.parentIndex !== undefined && leaf.parentIndex !== null) {
-				entry.bySeason.set(leaf.parentIndex, (entry.bySeason.get(leaf.parentIndex) ?? 0) + 1);
-			}
-		}
-
-		//Attach computed viewedLeafCount to show/season entries, keeping any larger remote count.
-		for (const [id, data] of dataById) {
-			if (data?.type !== 'show' && data?.type !== 'season') continue;
-
-			const showGuid = data.type === 'show' ? data.guid : data.parentGuid;
-			const counts = showGuid ? watchedByShow.get(showGuid) : undefined;
-			const computed = data.type === 'show'
-				? counts?.total ?? 0
-				: data.index !== undefined && data.index !== null
-					? counts?.bySeason.get(data.index) ?? 0
-					: 0;
-
-			const remoteCount = remoteByRatingKey.get(id)?.viewedLeafCount;
-			const viewedLeafCount = Math.max(computed, remoteCount ?? 0);
-
-			if (!viewedLeafCount) continue;
-
-			localByRatingKey.set(id, { ...localByRatingKey.get(id), ratingKey: id, viewedLeafCount });
-		}
-
-		const UserState = [
-			...new Set([...remoteByRatingKey.keys(), ...localByRatingKey.keys()]),
-		]
-			.map((ratingKey) => {
-				const remote = remoteByRatingKey.get(ratingKey);
-				const local = localByRatingKey.get(ratingKey);
-
-				if (!remote || !local) return remote ?? local ?? null;
-
-				//Local progress wins unless Plex has something more recent.
-				const merged = (remote.lastViewedAt ?? 0) > (local.lastViewedAt ?? 0)
-					? { ...local, ...remote }
-					: { ...remote, ...local };
-
-				//Already the larger of the locally computed and remote leaf counts.
-				return { ...merged, viewedLeafCount: local.viewedLeafCount ?? remote.viewedLeafCount };
-			})
-			.filter((state): state is PlexUserState => !!state);
-
-		return { UserState };
 	}
 
 	async getItem(id: string, noCache = false): Promise<Metadata | null> {

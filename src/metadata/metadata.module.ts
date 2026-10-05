@@ -4,9 +4,10 @@ import { MetadataService } from './metadata.service.js';
 import { PlexModule } from '../plex/plex.module.js';
 import { StremioModule } from '../stremio/stremio.module.js';
 import { AppModule } from '../app.module.js';
+import { ScrobblingModule } from '../scrobbling/scrobbling.module.js';
 
 @Module({
-  imports: [PlexModule, StremioModule, forwardRef(() => AppModule)],
+  imports: [PlexModule, StremioModule, forwardRef(() => AppModule), ScrobblingModule],
   controllers: [MetadataController],
   providers: [MetadataService],
   exports: [MetadataService]

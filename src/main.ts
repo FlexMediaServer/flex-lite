@@ -1,9 +1,9 @@
+import dotenv from 'dotenv';
 import { NestFactory } from '@nestjs/core';
 import { WsAdapter } from '@nestjs/platform-ws';
 import { AppModule, ObserveInstrument } from './app.module.js';
 import { createProxyMiddleware, fixRequestBody, responseInterceptor } from 'http-proxy-middleware';
 import { FormatInterceptor } from './format.interceptor.js';
-import dotenv from 'dotenv';
 dotenv.config();
 
 export const PROXY = {
