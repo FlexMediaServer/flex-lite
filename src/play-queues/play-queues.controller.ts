@@ -5,6 +5,7 @@ import { parseKey } from '../utils/generic.js';
 import { MetadataService } from '../metadata/metadata.service.js';
 import { StremioService } from '../stremio/stremio.service.js';
 import { PMSService } from '../plex/plex.service.js';
+import { ScrobblingService } from '../scrobbling/scrobbling.service.js';
 import { PlayQueuesService } from './play-queues.service.js';
 import { Metadata } from '../dto/Metadata.entity.js';
 import { emptyMedia, serializePlayQueues } from '../utils/plex.js';
@@ -24,6 +25,7 @@ export class PlayQueuesController {
 		private metadataService: MetadataService,
 		private stremioService: StremioService,
 		private pmsService: PMSService,
+		private scrobblingService: ScrobblingService,
 		// private playbackService: PlaybackService,
 		private playQueuesService: PlayQueuesService,
 	) {}
@@ -141,18 +143,6 @@ export class PlayQueuesController {
 		return serializePlayQueues(playQueue, window, false);
 	}
 
-	@Get('/library/metadata/:id/userState')
-	async userState(@Param('id') ids: string, @User() user: MyPlexUser, @Headers('x-plex-token') plexToken: string) {
-		const UserState = await this.metadataService.getUserState(ids, user, plexToken);
-
-		return {
-			MediaContainer: new MediaContainer({
-				identifier: 'com.plexapp.plugins.library',
-				UserState: UserState.UserState,
-			})
-		};
-	}
-
 	@Get('/:id/timeline')
 	async timeline(
 		@Query()
@@ -190,10 +180,13 @@ export class PlayQueuesController {
 
 		query.path = localItem.key
 		query.key = localItem.key
-		query.guid = item.guid
+		// query.guid = item.guid
 		query.ratingKey = localItem.key.split('/').pop()
 
 		if (query['X-Plex-Device'] === '') delete query['X-Plex-Device']
+
+		delete query['X-Plex-Token']
+		delete headers['x-plex-token']
 
 		const res = await this.pmsService.plexServerApi('/:/timeline', {
 			query,
@@ -202,7 +195,7 @@ export class PlayQueuesController {
 
 		const viewOffset = parseInt(query.time);
 		if (!isNaN(viewOffset) && ['playing', 'paused'].includes(query.state)) {
-			await this.metadataService.updateProgress(item, user, { type: 'timeline', viewOffset });
+			await this.scrobblingService.timeline(item, user, viewOffset);
 		}
 
 		return res;
@@ -229,15 +222,8 @@ export class PlayQueuesController {
 		const item = await this.metadataService.getItem(query.key);
 		if (!item) throw new NotFoundException();
 
-		await this.metadataService.discoverApi(`/actions/${scrobble ? 'scrobble' : 'unscrobble'}`, {
-			query: {
-				identifier: 'tv.plex.provider.discover',
-				key: query.key,
-				'X-Plex-Token': headers['x-plex-token']
-			},
-		})
-
-		await this.metadataService.updateProgress(item, user, { type: scrobble ? 'scrobble' : 'unscrobble' });
+		if (scrobble) void this.scrobblingService.scrobble(item, user);
+		else void this.scrobblingService.unscrobble(item, user);
 	}
 
 
@@ -253,13 +239,15 @@ export class PlayQueuesController {
 		if (query.videoResolution === '') query.videoResolution = '1080x1080'
 		if (query['X-Plex-Device'] === '') delete query['X-Plex-Device']
 
+		delete query['X-Plex-Token']
+		delete headers['x-plex-token']
+
+		//Decision must be called on the underlying server for audio and subtitle tracks to update for the transcoder
 		const decision = await this.pmsService.plexServerApi(req.path, {
 			method: 'GET',
 			query,
 			headers
 		});
-
-		// console.log(decision.MediaContainer.Metadata[0].Media[0],{showHidden: false, depth: null, colors: true})
 
 		const Media = {...decision.MediaContainer?.Metadata[0].Media[0]}
 
@@ -300,6 +288,8 @@ export class PlayQueuesController {
 
 		query.path = localItem.key
 		if (query['X-Plex-Device'] === '') delete query['X-Plex-Device']
+		delete query['X-Plex-Token']
+		delete headers['x-plex-token']
 
 		if (req.path.includes('.mpd') || req.path.includes('.m3u8')) {
 			const arrayBuffer = await this.pmsService.plexServerApi(req.baseUrl + req.path, {

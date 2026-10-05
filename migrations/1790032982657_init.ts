@@ -19,7 +19,8 @@ export async function up(db: Kysely<any>): Promise<void> {
 			.addColumn('account_id', 'integer')
 			.addColumn('guid', 'text', (col) => col.notNull()) //Plex GUID
 			.addUniqueConstraint('progress_unique', ['account_id', 'guid'])
-			.addColumn('grandparent_guid', 'text') //Plex GUID
+			.addColumn('parent_guid', 'text') //Parent GUID
+			.addColumn('grandparent_guid', 'text') //Grandparent GUID
 			.addColumn('index', 'integer')
 			.addColumn('parent_index', 'integer')
 			.addColumn('view_count', 'integer')

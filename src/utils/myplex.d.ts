@@ -79,6 +79,31 @@ declare type Service = {
 	status?: Status;
 };
 
+declare type ServerUserServices = {
+	id?: number;
+	uuid?: string;
+	username?: string;
+	title?: string;
+	email?: string;
+	friendlyName?: string;
+	services?: Service[];
+};
+
+declare type PlexScrobbleItem = {
+	guid?: string;
+	viewedAt?: number;
+	viewOffset?: number;
+	viewState?: 'complete' | 'unplayed';
+};
+
+declare type PlexScrobbleStateResponse = {
+	items?: PlexScrobbleItem[];
+	pageInfo?: {
+		endCursor?: string;
+		hasNextPage?: boolean;
+	};
+};
+
 declare enum Status {
 	Online = 'online',
 }
