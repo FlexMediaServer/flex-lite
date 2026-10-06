@@ -290,6 +290,7 @@ export class PlayQueuesController {
 		if (query['X-Plex-Device'] === '') delete query['X-Plex-Device']
 		delete query['X-Plex-Token']
 		delete headers['x-plex-token']
+		if (query.videoResolution === '') query.videoResolution = '1080x1080'
 
 		if (req.path.includes('.mpd') || req.path.includes('.m3u8')) {
 			const arrayBuffer = await this.pmsService.plexServerApi(req.baseUrl + req.path, {
