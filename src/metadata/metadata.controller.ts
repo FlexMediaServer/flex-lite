@@ -188,7 +188,8 @@ export class MetadataController {
 			(
 				(clientType === ClientType.ROKU && headers['x-plex-playback-session-id']) || 
 				(clientType === ClientType.WEB && headers['x-plex-playback-id']) || 
-				(clientType === ClientType.BIGSCREEN && headers['x-plex-playback-id'])
+				(clientType === ClientType.BIGSCREEN && headers['x-plex-playback-id']) ||
+				(clientType === ClientType.NATIVE_ANDROID && query.checkFiles == '1' && query.asyncAugmentMetadata !== '1')
 			) && (metadata.type === 'episode' || metadata.type === 'movie')
 		) {
 			const itemPath = await this.appService.resolveMedia(metadata);
@@ -230,7 +231,8 @@ export class MetadataController {
 		@User() user: MyPlexUser,
 		@Param() params: any,
 		@Query() query: any,
-		@Headers() headers: any
+		@Headers() headers: any,
+		@Client() clientType: ClientType
 	) {
 		const type: 'grandchildren' | 'children' = req.path.endsWith('/grandchildren') ? 'grandchildren' : 'children';
 		const children = await this.metadataService.discoverApi<{ MediaContainer?: MediaContainer }>(`/library/metadata/${params.id}/${type}`, {
@@ -266,8 +268,20 @@ export class MetadataController {
 		await this.metadataService.hydrateMetadata(metadataItems, user, headers['x-plex-token']);
 
 		for (const metadata of metadataItems) {
-			if (!metadata.Media?.length && (metadata.type === 'movie' || metadata.type === 'episode')) {
-				metadata.Media = createPlatformMediaPlaceholder(metadata.ratingKey, headers['user-agent']);
+			let Media = metadata.Media?.[0];
+			switch (clientType) {
+				case ClientType.NATIVE_ANDROID:
+				case ClientType.NATIVE_APPLE:
+					metadata.Media = Media ? [Media] : [emptyMedia() as any]
+					break;
+				case ClientType.REACT_NATIVE:
+				case ClientType.ROKU:
+					metadata.Media = Media ? [Media] : undefined
+				case ClientType.WEB:
+				case ClientType.BIGSCREEN:
+				default:
+					metadata.Media = Media ? [Media] : []
+					break;
 			}
 
 			metadata.userState = true;
