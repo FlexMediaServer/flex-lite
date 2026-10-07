@@ -30,8 +30,8 @@ export class PlexNotificationsGateway {
 		client.queryParams = queryParams;
 
 		// Plex requires a token on the notifications socket
-		if (!url.searchParams.has('X-Plex-Token') && process.env.PLEX_TOKEN) {
-			url.searchParams.set('X-Plex-Token', process.env.PLEX_TOKEN);
+		if (!url.searchParams.has('X-Plex-Token') && this.pmsService.plexToken) {
+			url.searchParams.set('X-Plex-Token', this.pmsService.plexToken);
 		}
 
 		const upstream = new WebSocket(url.toString());
