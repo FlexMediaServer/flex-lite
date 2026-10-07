@@ -226,6 +226,11 @@ export class PlayQueuesController {
 		else void this.scrobblingService.unscrobble(item, user);
 	}
 
+	@Put(['/:id/scrobble', '/:id/unscrobble'])
+	async scrobblePut(@Req() req: any, @Query() query: any, @User() user: MyPlexUser, @Headers() headers: { 'x-plex-playback-session-id': string } & any) {
+		return await this.scrobble(req, user, query, headers);
+	}
+
 
 	@Get('/video/:id/transcode/universal/decision')
 	async decision (@Req() req: any, @Query() query: any, @Headers() headers: any, @IsXML() isXML: boolean) {

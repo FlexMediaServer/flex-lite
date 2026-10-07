@@ -1,4 +1,4 @@
-FROM lscr.io/linuxserver/plex
+FROM lscr.io/linuxserver/plex:1.43.4
 
 RUN apt-get update && \
     apt-get install -y curl unzip wget fuse3 supervisor nodejs npm && \
