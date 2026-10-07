@@ -201,17 +201,31 @@ export class MetadataService {
 		const entries = await Promise.all(
 			rows
 				.map(async (row) => {
-					const completed = (row.view_count ?? 0) > 0;
 					const plexItem = await this.getItem(row?.guid?.split('/')?.pop() as string)
 
 					// console.log(plexItem);
 
 					let item: Metadata | null | undefined;
 					if (plexItem?.type === 'season' || plexItem?.type === 'episode') {
-						if (row.view_offset as number > 0) item = plexItem
-						else if (row.view_count as number > 0) item = await this.getNextEpisode(plexItem);
+						if ((row.view_offset as number) > 0) item = plexItem;
+						else if ((row.view_count as number) > 0 || plexItem.type === 'season') {
+							//Finished rows continue from the first still-playable entry after the
+							//anchor; the show row supplies the watched cascade when it exists. A
+							//season row at zero is the unwatched override under a watched show and
+							//resolves to that season's first still-playable episode.
+							const showId = plexItem.grandparentGuid ?? (plexItem.type === 'season' ? plexItem.parentGuid : undefined);
+							const show = showId ? await this.getItem(showId.split('/').pop()!) : null;
+							item = await this.getNextEpisode(plexItem, show, user);
+						} else {
+							//An unwatched episode override under a watched parent: this episode is
+							//the next thing to watch, so the shelf points straight at it.
+							item = plexItem;
+						}
 					} else {
-						item = plexItem;
+						//Shows and movies: a watched container row means everything under it was
+						//cascaded away (or, for a movie, the scrobble reset the offset), so there is
+						//nothing left to resume and the shelf item is hidden unless playback is mid-way.
+						item = (row.view_offset ?? 0) > 0 ? plexItem : null;
 					}
 
 					return item ? { item: item, row } : null;
@@ -243,31 +257,93 @@ export class MetadataService {
 			.sort((a, b) => (b.lastViewedAt ?? 0) - (a.lastViewedAt ?? 0));
 	}
 
-	async getNextEpisode (item: Metadata) {
+	/**
+	 * Resolves the episode a finished shelf row continues to: the first entry after the given
+	 * season/episode anchor, in season-then-episode order, that the user can still watch. An
+	 * episode is playable unless it is watched (by its own row or cascaded from a watched
+	 * season/show, honouring explicit unwatched overrides) or has not aired yet; seasons are
+	 * skipped entirely when watched. Watch state comes from the group's own `progress` rows, so a
+	 * season re-marked watched after a show-level "watched" no longer surfaces its cascaded successor.
+	 * Returns null when the season/show has nothing left to play, hiding the shelf item.
+	 */
+	async getNextEpisode (item: Metadata, show: Metadata | null, user: MyPlexUser): Promise<Metadata | null> {
+		if (item.type !== 'season' && item.type !== 'episode') return null;
+		if (!user?.id) return null;
+
+		const showGuid = show?.guid ?? item.grandparentGuid ?? (item.type === 'season' ? item.parentGuid : undefined);
+
+		//Watched-state rows for the whole show group in one query: episode rows by show, season
+		//rows by their `parent_guid`, plus the show's own row for the watched cascade.
+		const rows = await db
+			.selectFrom('progress')
+			.select(['guid', 'view_count'])
+			.where('account_id', '=', user.id)
+			.where((eb) =>
+				showGuid
+					? eb.or([eb('grandparent_guid', '=', showGuid), eb('parent_guid', '=', showGuid), eb('guid', '=', showGuid)])
+					: eb.or([eb('guid', '=', item.parentGuid ?? ''), eb('guid', '=', item.guid ?? '')]),
+			)
+			.execute();
+
+		//-1 is the Continue Watching hide marker, not a watched state.
+		const stateByGuid = new Map(
+			rows.filter((row) => row.view_count !== -1).map((row) => [row.guid, row] as const),
+		);
+		const getEntry = (guid?: string) => (guid ? stateByGuid.get(guid) : undefined);
+		const isWatched = (guid?: string) => (getEntry(guid)?.view_count ?? 0) > 0;
+		const isUnwatchedOverride = (guid?: string) => !!getEntry(guid) && (getEntry(guid)?.view_count ?? 0) <= 0;
+
+		const isWatchedByCascade = (ep: Metadata): boolean => {
+			if (isUnwatchedOverride(ep.guid)) return false;
+			if (isWatched(ep.guid)) return true;
+			if (isUnwatchedOverride(ep.parentGuid)) return false;
+			return isWatched(ep.parentGuid) || isWatched(showGuid);
+		};
+		const isSeasonWatched = (season: Metadata): boolean => {
+			if (isUnwatchedOverride(season.guid)) return false;
+			return isWatched(season.guid) || isWatched(showGuid);
+		};
+		const hasAired = (ep: Metadata) =>
+			!ep.originallyAvailableAt || new Date(ep.originallyAvailableAt.replaceAll('-', '/')) <= new Date();
+
+		const playableIn = async (seasonId: string): Promise<Metadata | null> => {
+			const episodes = await this.getItemChildren(seasonId, 200);
+			return episodes?.find((ep) => !isWatchedByCascade(ep) && hasAired(ep)) ?? null;
+		};
+
 		if (item.type === 'season') {
-			let nextSeason = await this.getNextSeason(item);
-			if (!nextSeason) return null;
-			let episode = await this.getItemChildren(nextSeason?.ratingKey as string, 1, 0);
-			if (!episode) return null;
-			return episode[0];
-		} else if (item.type === 'episode') {
-			console.log(item.parentRatingKey)
-			let episodes = await this.getItemChildren(item.parentRatingKey, 100, 0);
-			if (!episodes) return null;
-
-			let episode = episodes.find((episode) =>  episode.index === item.index as number + 1)
-			if (episode) return episode;
-
-			let nextSeason = await this.getNextSeason(item);
-			if (!nextSeason) return null;
-			return (await this.getItemChildren(nextSeason?.ratingKey as string, 1, 0))?.[0];
+			if (!isSeasonWatched(item)) {
+				const first = await playableIn(item.ratingKey.split('/').pop()!);
+				if (first) return first;
+			}
+			const nextSeason = await this.getNextSeason(item);
+			if (!nextSeason || isSeasonWatched(nextSeason)) return null;
+			return playableIn(nextSeason.ratingKey.split('/').pop()!);
 		}
+
+		//Stay inside the anchor's own season: first still-playable episode after its index.
+		const episodes = await this.getItemChildren((item.parentRatingKey ?? item.parentGuid)?.split('/').pop()!, 200, 0);
+		const later = episodes?.filter((ep) => (ep.index ?? 0) > (item.index ?? 0)) ?? [];
+		const inSeason = later.find((ep) => !isWatchedByCascade(ep) && hasAired(ep));
+		if (inSeason) return inSeason;
+
+		const nextSeason = await this.getNextSeason(item);
+		if (!nextSeason || isSeasonWatched(nextSeason)) return null;
+		return playableIn(nextSeason.ratingKey.split('/').pop()!);
 	}
 
 	async getNextSeason (item: Metadata): Promise<Metadata | undefined> {
 		let seasons = await this.getItemChildren(item.type === 'season' ? item.parentRatingKey : item.grandparentRatingKey, 100, 0);
 		if (!seasons) return undefined;
-		let nextSeason = seasons.find((s) => s.index === item.index as number + 1);
+		//Episodes carry their episode index, so season lookup from an episode goes through its season.
+		if (item.type === 'episode') {
+			const season = await this.getItem((item.parentGuid ?? item.parentRatingKey)?.split('/').pop()!);
+			if (!season) return undefined;
+			seasons = await this.getItemChildren(season.parentRatingKey?.split('/').pop() ?? season.parentGuid?.split('/').pop()!, 100, 0);
+			if (!seasons) return undefined;
+			return seasons.find((s) => s.index === (season.index ?? -1) + 1);
+		}
+		let nextSeason = seasons.find((s) => s.index === (item.index ?? -1) + 1);
 		return nextSeason;
 	}
 

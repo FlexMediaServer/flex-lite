@@ -78,7 +78,9 @@ export class ScrobblingService implements OnApplicationBootstrap {
 	 * season's own state becomes the single source of truth for the cascade.
 	 *
 	 * Scrobbling or unscrobbling a show likewise clears every row beneath it, and unscrobbling a
-	 * show or season drops its own row too, leaving no record behind rather than an empty one.
+	 * show drops its own row too, leaving no record behind rather than an empty one. A season
+	 * keeps its own row, though: under a watched show it is the only thing able to mark just that
+	 * season unwatched again.
 	 *
 	 * The show/season identifiers are taken from the item so watched leaves stay attributable to
 	 * the right show (`grandparent_guid`) and season (`parent_index`) for `viewedLeafCount`.
@@ -124,40 +126,38 @@ export class ScrobblingService implements OnApplicationBootstrap {
 			)
 			.execute();
 
-		//Unscrobbling a show or season also removes its own row, so no progress record is left
-		//behind; a scrobble keeps it as the watched state the cascade flows from.
+		//Unscrobbling a show removes its own row too, so no progress record is left behind; a
+		//scrobble keeps it as the watched state the cascade flows from. Seasons never drop their
+		//own row: beneath a watched show it is the only thing that can keep a season unwatched.
 		const deleteOwnRow = update.type === 'unscrobble';
 
 		if (item.type === 'show' && item.guid) {
 			const showGuid = item.guid;
+			//Season rows hang off the show via `parent_guid` (their `grandparent_guid` is null), so
+			//both levels are cleared and the show's own row becomes the single source of truth.
 			await db
 				.deleteFrom('progress')
 				.where('account_id', '=', user.id)
 				.where((eb) =>
-					deleteOwnRow
-						? eb.or([eb('grandparent_guid', '=', showGuid), eb('guid', '=', showGuid)])
-						: eb('grandparent_guid', '=', showGuid),
+					eb.or([
+						eb('grandparent_guid', '=', showGuid),
+						eb('parent_guid', '=', showGuid),
+						...(deleteOwnRow ? [eb('guid', '=', showGuid)] : []),
+					]),
 				)
 				.execute();
 		}
 
-		//Marking a season watched/unscrobbled clears its episodes' override rows (view_count <= 0,
-		//including -1 markers and timeline rows) so stale overrides can't block the season cascade.
+		//Marking a season watched/unwatched clears its episodes' rows (watched, override, -1 marker
+		//and timeline rows alike) so stale per-episode state can't block the season's own state.
 		if (item.type === 'season' && item.parentGuid && item.index !== undefined && item.index !== null) {
-			const seasonGuid = item.guid;
 			const showGuid = item.parentGuid;
 			const seasonIndex = item.index;
 			await db
 				.deleteFrom('progress')
 				.where('account_id', '=', user.id)
-				.where((eb) =>
-					deleteOwnRow && seasonGuid
-						? eb.or([
-							eb.and([eb('grandparent_guid', '=', showGuid), eb('parent_index', '=', seasonIndex)]),
-							eb('guid', '=', seasonGuid),
-						])
-						: eb.and([eb('grandparent_guid', '=', showGuid), eb('parent_index', '=', seasonIndex)]),
-				)
+				.where('grandparent_guid', '=', showGuid)
+				.where('parent_index', '=', seasonIndex)
 				.execute();
 		}
 	}
@@ -285,8 +285,13 @@ export class ScrobblingService implements OnApplicationBootstrap {
 			if (isUnwatchedOverride(item.guid)) return false;
 			if (isWatched(item.guid)) return true;
 
-			//Cascade: episodes inherit from their season or show, seasons from their show.
-			if (item.type === 'episode') return isWatched(item.parentGuid) || isWatched(item.grandparentGuid);
+			//Cascade: episodes inherit from their season or show, seasons from their show. An
+			//explicitly unwatched season overrides a watched show, so its episodes can't inherit
+			//watched from the show while the season's own unwatched row stands.
+			if (item.type === 'episode') {
+				if (isUnwatchedOverride(item.parentGuid)) return false;
+				return isWatched(item.parentGuid) || isWatched(item.grandparentGuid);
+			}
 			if (item.type === 'season') return isWatched(item.parentGuid);
 
 			return false;
