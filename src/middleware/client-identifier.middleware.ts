@@ -35,6 +35,11 @@ Roku (Native): Roku/DVP-15.2 (15.2.4.3455-E6)
 
 Plex HTPC (Native) [Bigscreen Client]: Plex HTPC; 1.71.1.346-f62ce923; Windows 10 Version 2009
 
+Plex Tizen [Bigscreen Client]: 
+Mozilla/5.0 (SMART-TV; LINUX; Tizen 5.5) AppleWebKit/537.36 (KHTML, like Gecko) 69.0.3497.106/5.5 TV Safari/537.36 ::ffff:172.20.0.3
+SamsungDASH/2.0 (;;;;;) ::ffff:172.20.0.3
+
+
 Web: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36
 */
 
