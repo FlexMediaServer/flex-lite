@@ -244,8 +244,9 @@ export class PlayQueuesController {
 		if (query.videoResolution === '') query.videoResolution = '1080x1080'
 		if (query['X-Plex-Device'] === '') delete query['X-Plex-Device']
 
-		delete query['X-Plex-Token']
-		delete headers['x-plex-token']
+		delete query['X-Plex-Token'];
+		delete headers['x-plex-token'];
+		delete headers['X-Plex-Token'];
 
 		//Decision must be called on the underlying server for audio and subtitle tracks to update for the transcoder
 		const decision = await this.pmsService.plexServerApi(req.path, {
@@ -284,18 +285,24 @@ export class PlayQueuesController {
 		'/video/:id/transcode/universal/start',
 	])
 	async start(@Req() req: any, @Res() res: any, @Query() query: any, @Headers() headers: any) {
-		const itemId = query.path.split('/').pop()
-		let item = await this.metadataService.getItem(itemId)
-		if (!item) throw new NotFoundException('Plex metadata item not found')
 
-		let localItem = (await this.pmsService.resolveLocalItem([item]))[0];
-		if (!localItem) throw new NotFoundException('Local item not found')
-
-		query.path = localItem.key
+		delete query['X-Plex-Token'];
+		delete headers['x-plex-token'];
+		delete headers['X-Plex-Token'];
 		if (query['X-Plex-Device'] === '') delete query['X-Plex-Device']
-		delete query['X-Plex-Token']
-		delete headers['x-plex-token']
-		if (query.videoResolution === '') query.videoResolution = '1080x1080'
+
+		//This req can be called by some clients (eg. Tizen devices) without a path query param and just an existing session ID.
+		if (query.path) {
+			const itemId = query.path.split('/').pop()
+			let item = await this.metadataService.getItem(itemId)
+			if (!item) throw new NotFoundException('Plex metadata item not found')
+
+			let localItem = (await this.pmsService.resolveLocalItem([item]))[0];
+			if (!localItem) throw new NotFoundException('Local item not found')
+
+			query.path = localItem.key
+			if (query.videoResolution === '') query.videoResolution = '1080x1080'
+	}
 
 		if (req.path.includes('.mpd') || req.path.includes('.m3u8')) {
 			const arrayBuffer = await this.pmsService.plexServerApi(req.baseUrl + req.path, {
@@ -309,7 +316,7 @@ export class PlayQueuesController {
 			return res.status(200).send(buffer);
 		}
 
-		console.log(req.baseUrl + req.path, localItem.key)
+		// console.log(req.baseUrl + req.path, localItem?.key)
 		const response = await this.pmsService.plexServerApi.raw(req.baseUrl + req.path, {
 			query,
 			headers,
@@ -333,7 +340,11 @@ export class PlayQueuesController {
 	@Get('/library/parts/{*path}')
 	async getPart (@Req() req: any, @Res({ passthrough: true }) res: any, @Query() query: any, @Headers() headers: any) {
 		if (query['X-Plex-Device'] === '') delete query['X-Plex-Device']
-		
+
+		delete query['X-Plex-Token'];
+		delete headers['x-plex-token'];
+		delete headers['X-Plex-Token'];
+
 		let response = await this.pmsService.plexServerApi.raw(req.path, {
 			query,
 			headers,

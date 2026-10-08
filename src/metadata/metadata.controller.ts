@@ -198,21 +198,7 @@ export class MetadataController {
 
 		await this.metadataService.hydrateMetadata([metadata], user, headers['x-plex-token']);
 
-		const Media = metadata.Media?.[0];
-		switch (clientType) {
-			case ClientType.NATIVE_ANDROID:
-			case ClientType.NATIVE_APPLE:
-				metadata.Media = Media ? [Media] : [emptyMedia() as any]
-				break;
-			case ClientType.REACT_NATIVE:
-			case ClientType.ROKU:
-				metadata.Media = Media ? [Media] : undefined
-			case ClientType.WEB:
-			case ClientType.BIGSCREEN:
-			default:
-				metadata.Media = Media ? [Media] : []
-				break;
-		}
+		this.metadataService.applyDummyMedia(metadata, clientType)
 
 		return {
 			MediaContainer: new MediaContainer({
@@ -268,22 +254,7 @@ export class MetadataController {
 		await this.metadataService.hydrateMetadata(metadataItems, user, headers['x-plex-token']);
 
 		for (const metadata of metadataItems) {
-			let Media = metadata.Media?.[0];
-			switch (clientType) {
-				case ClientType.NATIVE_ANDROID:
-				case ClientType.NATIVE_APPLE:
-					metadata.Media = Media ? [Media] : [emptyMedia() as any]
-					break;
-				case ClientType.REACT_NATIVE:
-				case ClientType.ROKU:
-					metadata.Media = Media ? [Media] : undefined
-				case ClientType.WEB:
-				case ClientType.BIGSCREEN:
-				default:
-					metadata.Media = Media ? [Media] : []
-					break;
-			}
-
+			this.metadataService.applyDummyMedia(metadata, clientType)
 			metadata.userState = true;
 		}
 

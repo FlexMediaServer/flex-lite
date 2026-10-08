@@ -11,6 +11,8 @@ import { StremioService } from '../stremio/stremio.service.js';
 import type { StremioService as StremioServiceType } from '../stremio/stremio.service.js';
 import { StremioMeta } from '../stremio/stremio.js';
 import { ScrobblingService } from '../scrobbling/scrobbling.service.js';
+import { ClientType } from '../middleware/client-identifier.middleware.js';
+import { emptyMedia } from '../utils/plex.js';
 
 @Injectable()
 export class MetadataService {
@@ -703,5 +705,23 @@ export class MetadataService {
 			metadata: (result?.MediaContainer?.Metadata ?? []) as Metadata[],
 			totalSize: result?.MediaContainer?.totalSize ?? 0,
 		};
+	}
+
+	applyDummyMedia (metadata: Metadata, clientType: ClientType) {
+		const Media = metadata.Media?.[0];
+		switch (clientType) {
+			case ClientType.NATIVE_ANDROID:
+			case ClientType.NATIVE_APPLE:
+				metadata.Media = Media ? [Media] : [emptyMedia() as any]
+				break;
+			case ClientType.REACT_NATIVE:
+			case ClientType.ROKU:
+				metadata.Media = Media ? [Media] : undefined
+			case ClientType.WEB:
+			case ClientType.BIGSCREEN:
+			default:
+				metadata.Media = Media ? [Media] : []
+				break;
+		}
 	}
 }
