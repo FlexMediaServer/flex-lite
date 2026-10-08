@@ -33,7 +33,7 @@ version: '3.9'
 
 services:
     flex:
-        image: ghcr.io/flexmediaserver/server
+        image: ghcr.io/flexmediaserver/flex-lite:latest
         restart: unless-stopped
         environment:
             CLAIM_TOKEN: <claim token>
