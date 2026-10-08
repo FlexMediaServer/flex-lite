@@ -11,11 +11,24 @@ export class ProvidersController {
 	async providers (@Headers() headers: any, @Query() query: any) {
 		try {
 			let response = await axios.get(`${this.endpoint}/media/providers`, {
-				headers: headers,
+				headers: { ...headers, Accept: 'application/json' }, //Always fetch JSON; FormatInterceptor re-serializes to the client's format
 				params: query
 			});
-			
+
+			const mediaContainer = response.data?.MediaContainer;
+			const providers = this.toArray(mediaContainer?.MediaProvider);
+
+			for (const provider of providers)
+				for (const feature of this.toArray(provider.Feature))
+					for (const directory of this.toArray(feature.Directory))
+						directory.Pivot = this.toArray(directory.Pivot).filter((pivot: any) => pivot?.symbol !== 'library');
+
 			return response.data
 		} catch (e) {}
+	}
+
+	private toArray (value: any): any[] {
+		if (value === undefined || value === null) return [];
+		return Array.isArray(value) ? value : [value];
 	}
 }
