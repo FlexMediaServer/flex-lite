@@ -111,7 +111,7 @@ server {
 
 
 ### Known issues
-Playback tracking is showing my user
+All playback sessions are showing my user
  * This is because Plex only allows transiently ingested items to be accessed by the server owner's token. This will be fixed in later releases.
 
 Not able to watch content locally without Plex Pass
