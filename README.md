@@ -1,6 +1,6 @@
 # Flex Media Server (PMS Middleware)
 
-Flex is a custom Plex server that connects Plex clients to Stremio providers. Here's how it works:
+Flex is a Plex middleware that connects Plex clients to Stremio providers. Here's how it works:
 
 1. **Browse** - Search for a show/movie. Flex fetches metadata from Plex's discover service
 2. **Play** - Press play and Flex queries your Stremio provider for available sources
