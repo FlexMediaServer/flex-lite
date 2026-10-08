@@ -6,7 +6,7 @@ export class Pivot {
 	key: string;
 	id: string;
 	title: string;
-	symbol: 'star' | 'stack' | 'library';
+	symbol: 'star' | 'stack';
 	type: 'list' | 'hub';
 
 	constructor(values: Partial<Pivot>) {

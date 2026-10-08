@@ -7,7 +7,7 @@ import { MediaProvider } from './provider/MediaProvider.entity.js';
 export class MediaContainer {
 	@Expose()
 	get size(): number {
-		return this.Hub?.length || this.Metadata?.length || this.MediaProvider?.length || 0;
+		return this.Hub?.length || this.Metadata?.length || this.MediaProvider?.length || this.UserState?.length || 0;
 	}
 
 	totalSize: number;
@@ -99,6 +99,7 @@ export class MediaContainer {
 	@Type(() => Metadata) Metadata?: Metadata[];
 	@Type(() => Hub) Hub?: Hub[];
 	@Type(() => MediaProvider) MediaProvider?: MediaProvider[];
+	UserState?: Record<string, unknown>[];
 
 	constructor(values: Partial<MediaContainer>) {
 		Object.assign(this, values);
