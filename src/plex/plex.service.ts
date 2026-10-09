@@ -188,24 +188,57 @@ export class PMSService implements OnModuleInit {
 		const guid = item.guid?.split('/').pop();
 		if (!guid) return null; //Should throw an exception
 
-		let itemId = (await db.selectFrom('item_mappings').select('item_id').where('guid', '=', guid).executeTakeFirst())?.item_id;
-		
-		await new Promise(resolve => setTimeout(resolve, 2000)); //Wait 2 seconds to allow rclone mount to update
+		const itemMapping = await db
+			.selectFrom('item_mappings')
+			.selectAll()
+			.where('guid', '=', guid)
+			.executeTakeFirst();
 
-		await this.refreshPath(item, filePath);
+		let itemMappingId: string | undefined;
 
-		itemId = await new Promise<string>((resolve, reject) => {
-			this.eventBus.once(`imported:${guid}`, (id) => {
-				resolve(id)
+		if (itemMapping) {
+			// Only return the existing item if it is still present in the Plex server
+			const existingItem = (await this.resolveLocalItem([item]))[0];
+
+			if (existingItem) {
+				itemMappingId = itemMapping.item_id;
+			} else {
+				await db.deleteFrom('item_mappings').where('guid', '=', guid).execute();
+			}
+		}
+
+		if (!itemMappingId) {
+			const metadataItem = (
+				await this.plexServerApi('/library/file', {
+					method: 'POST',
+					query: {
+						url,
+						computeHashes: 0,
+						ingestNonMatches: 1,
+					},
+				})
+			).MediaContainer.Metadata[0] as Metadata;
+
+			await this.plexServerApi(`${metadataItem.key}/match`, {
+				method: 'PUT',
+				query: {
+					guid: item.guid,
+					name: item.title
+				}
 			})
-		})
 
-		await db
-			.insertInto('item_mappings')
-			.values({ guid: guid, item_id: itemId as string })
-			.onConflict((oc) => 
-				oc.column('guid').doUpdateSet({ item_id: itemId })
-			).execute();
+			itemMappingId = metadataItem?.key.split('/').pop();
+
+			if (itemMappingId) {
+				await db
+					.insertInto('item_mappings')
+					.values({ guid, item_id: itemMappingId, url })
+					.onConflict((oc) => oc.column('guid').doUpdateSet({ item_id: itemMappingId, url }))
+					.execute();
+			}
+		}
+
+		this.eventBus.emit(`imported:${guid}`, itemMappingId);
 
 		return itemId;
 	}

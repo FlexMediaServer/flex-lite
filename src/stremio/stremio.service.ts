@@ -69,7 +69,7 @@ export class StremioService implements OnModuleInit {
 		console.log(stremioId)
 		if (!stremioId) return null;
 
-		const streams = await this.fetchAvailableStreams(stremioId, item.type === 'show' ? 'series' : 'movie')
+		const streams = await this.fetchAvailableStreams(stremioId, item.type === 'episode' ? 'series' : 'movie')
 		if (!streams || streams.length === 0) return { url: process.env.MEDIA_NOT_FOUND_VIDEO };
 
 		// Probe each stream URL until one is found working
