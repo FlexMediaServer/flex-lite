@@ -1,11 +1,8 @@
-FROM lscr.io/linuxserver/plex
+FROM lscr.io/linuxserver/plex:1.43.4
 
 RUN apt-get update && \
     apt-get install -y curl unzip wget fuse3 supervisor nodejs npm && \
     apt-get clean
-
-RUN mkdir -p /run/plex-temp
-RUN curl https://rclone.org/install.sh | bash
 
 # Copy and build NestJS application
 WORKDIR /app
@@ -24,7 +21,6 @@ COPY .config ./.config
 COPY tsconfig.json tsconfig.build.json ./
 RUN pnpm run build
 
-COPY docker/rclone.conf /root/.config/rclone/rclone.conf
 COPY docker/supervisord.conf /supervisord.conf
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

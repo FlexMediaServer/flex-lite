@@ -1,30 +1,34 @@
-import { Post, Query, Headers, Res, NotFoundException, Controller, Get, Param, InternalServerErrorException, Put, Delete, Req, StreamableFile, Header } from '@nestjs/common';
+import { Post, Query, Headers, Res, NotFoundException, Controller, Get, Param, InternalServerErrorException, Put, Delete, Req, StreamableFile, Header, UseGuards } from '@nestjs/common';
 import { randomInt } from 'node:crypto';
 import { PlayQueuesQuery } from './play-queues.dto.js';
 import { parseKey } from '../utils/generic.js';
 import { MetadataService } from '../metadata/metadata.service.js';
 import { StremioService } from '../stremio/stremio.service.js';
-import { WebdavService } from '../webdav/webdav.service.js';
 import { PMSService } from '../plex/plex.service.js';
+import { ScrobblingService } from '../scrobbling/scrobbling.service.js';
 import { PlayQueuesService } from './play-queues.service.js';
 import { Metadata } from '../dto/Metadata.entity.js';
 import { emptyMedia, serializePlayQueues } from '../utils/plex.js';
 import { Readable } from 'node:stream';
 import { MediaContainer } from '../dto/MediaContainer.entity.js';
 import { IsXML } from '../is-xml.decorator.js';
+import { User } from '../utils/user.decorator.js';
+import { AppService } from '../app.service.js';
+import util from 'util';
+import { LoggedInGuard } from '../middleware/logged-in.guard.js';
 
 @Controller()
+@UseGuards(LoggedInGuard)
 export class PlayQueuesController {
 	constructor(
-		// appService: AppService,
+		private appService: AppService,
 		private metadataService: MetadataService,
 		private stremioService: StremioService,
 		private pmsService: PMSService,
+		private scrobblingService: ScrobblingService,
 		// private playbackService: PlaybackService,
 		private playQueuesService: PlayQueuesService,
 	) {}
-
-	//TODO: If series, make this solely use /grandchildren endpoint on Plex Discover to get all episodes of a series and paginate. Only store playQueue ID and currentItem ID. Cache results
 
 	@Post(['/playQueues'])
 	async playQueues(
@@ -34,128 +38,110 @@ export class PlayQueuesController {
 		// @IsXML() isXML,
 	) {
 		const parsedPath = parseKey(query.key ? query.key : decodeURIComponent(new URL(query.uri).pathname));
-
 		const item = await this.metadataService.getItem(parsedPath.itemId) as Metadata;
 
 		const playbackSessionId =
 			headers['x-plex-playback-session-id'] ||
-			query['x-plex-playback-session-id'] ||
-			headers['x-plex-session-id'] ||
-			query['x-plex-session-id'];
+			headers['x-plex-session-id'];
 
-		let nextMetadata: Metadata[] = [];
+		// Only the show/movie GUID, current item GUID and internal offset are stored.
+		// Episode lists are fetched live from the Plex Discover /grandchildren endpoint.
+		let show: string | undefined;
 		let currentItem: string | undefined;
+		let offset = 0;
 
-		if (item.type == 'show') {
-			// start at S1E1 and include next episodes
-			const seasons = await this.metadataService.getItemChildren(item?.ratingKey as string); //Get seasons of a show
-			nextMetadata = await this.metadataService.getItemChildren(seasons?.[0].ratingKey as string) as Metadata[]; //Get episodes of the first season of the show
-			currentItem = nextMetadata.find((episode: Metadata) => episode.index == 1)?.ratingKey as string;
+		if (item.type == 'show' || item.type == 'movie') {
+			show = item.guid ?? `plex://${item.type}/${item.ratingKey}`;
+			offset = 0;
 
-			if (!currentItem) {
-				currentItem = nextMetadata[0].ratingKey;
-			}
+			const window = await this.playQueuesService.fetchWindow({ playbackSessionId, item: show, currentItem: '', offset });
+			currentItem = window.items[0]?.guid;
 		} else if (item.type == 'season') {
-			// start at episode 1 of the season and include next episodes
-			nextMetadata = await this.metadataService.getItemChildren(item.ratingKey) as Metadata[]; //Gets season's episodes to populate play queue.
+			// Start at episode 1 of the season: offset = total episodes of all previous seasons
+			show = `plex://show/${item.parentRatingKey}`;
 
-			currentItem = nextMetadata.find((episode: Metadata) => episode.index == item.index)?.ratingKey as string;
-
-			if (!currentItem) {
-				currentItem = nextMetadata[0].ratingKey;
+			const seasons = ((await this.metadataService.getItemChildren(item.parentRatingKey)) ?? []).sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+			for (const season of seasons) {
+				if ((season.index ?? 0) >= (item.index ?? 0)) break;
+				offset += season.leafCount ?? 0;
 			}
+
+			const window = await this.playQueuesService.fetchWindow({ playbackSessionId, item: show, currentItem: '', offset });
+			currentItem = window.items[0]?.guid;
 		} else if (item.type == 'episode') {
-			// return the current episode and next episodes
-			nextMetadata = await this.metadataService.getItemChildren(item.parentRatingKey) as Metadata[]; //Gets full season episodes to populate play queue.
-
-			currentItem = nextMetadata.find((episode: Metadata) => episode.ratingKey == item.ratingKey)?.ratingKey as string;
-
-			if (!currentItem) {
-				currentItem = nextMetadata[0].ratingKey;
-			}
-		} else if (item.type == 'movie') {
-			// return just the current media
-			nextMetadata = [item];
-
-			currentItem = item.ratingKey;
+			// Offset = total episodes of all previous seasons + the episode's position in its season
+			const computed = await this.playQueuesService.computeOffset(item.ratingKey);
+			show = computed.item;
+			currentItem = computed.currentItem;
+			offset = computed.offset;
 		}
 
 		if (!currentItem) {
 			throw new NotFoundException('Could not determine current item for play queue');
 		}
 
-		let playQueue = await this.playQueuesService.setPlayQueue(randomInt(0, 1_000_000), {
-			currentItem, // todo
-			items: nextMetadata,
+		const playQueue = await this.playQueuesService.setPlayQueue(randomInt(0, 1_000_000), {
 			playbackSessionId,
+			item: show as string,
+			currentItem,
+			offset,
 		});
 
 		console.debug(`Play queue created... ${playQueue.id}`);
 
-		const currentIndex = playQueue.items?.findIndex((item) => item.ratingKey == playQueue.currentItem);
-		const currentItemObj = playQueue.items[currentIndex];
-		const stream = await this.stremioService.resolveStream(currentItemObj);
-		if (!stream || !stream?.url) throw new NotFoundException()
+		const window = await this.playQueuesService.fetchWindow(playQueue);
+		const currentRatingKey = currentItem.split('/').pop();
+		const currentItemObj = window.items.find((entry: any) => entry.guid === currentItem || entry.ratingKey === currentRatingKey) as Metadata;
 
-		const itemPath = await this.pmsService.addStream(item, stream?.url)
+		const itemPath = await this.appService.resolveMedia(currentItemObj);
+		if (!itemPath) throw new NotFoundException();
 
-		for (let item of playQueue.items) {
-			let localItem = await this.pmsService.resolveLocalItem(item)
-			if (localItem && localItem.Media?.[0]) {
-				item.Media = [localItem.Media[0]]
+		for (const windowItem of window.items) {
+			if (windowItem === currentItemObj) {
+				const localItem = (await this.pmsService.resolveLocalItem([windowItem]))[0];
+				windowItem.Media = localItem?.Media?.[0] ? [localItem.Media[0]] : (emptyMedia() as any);
 			} else {
-				item.Media = emptyMedia() as any
+				windowItem.Media = emptyMedia() as any;
 			}
 		}
 
-		// playQueue.items = playQueue.items.slice(currentIndex, currentIndex+100)
-
-		return serializePlayQueues(playQueue, false);
+		return serializePlayQueues(playQueue, window, false);
 	}
 
 	@Get(['/playQueues/:id'])
 	async getPlayQueues(@Param('id') playQueueId: any, @Query('center') center: any) {
-		const playQueue = await this.playQueuesService.getPlayQueue(playQueueId);
+		let playQueue = await this.playQueuesService.getPlayQueue(playQueueId);
 		if (!playQueue) return new NotFoundException();
 
-		// if (center !== undefined) await this.playQueuesService.selectIndex(playQueue.id, parseInt(center));
+		//Required for some older clients, this is mainly done using /playQueues/:id?center=<play queue item id>
+		if (center !== undefined) await this.playQueuesService.selectItem(playQueue.id as number, center);
 
-		//Fetch play queue again for updated index information
-		// playQueue = await this.playQueuesService.getPlayQueue(playQueueId);
+		//Fetch play queue again for updated offset information
+		playQueue = await this.playQueuesService.getPlayQueue(playQueueId);
+		if (!playQueue) return new NotFoundException();
 
-		let item = await this.metadataService.getItem(playQueue.currentItem);
-		if (!item) throw new NotFoundException()
-		let localItem = await this.pmsService.resolveLocalItem(item);
+		const window = await this.playQueuesService.fetchWindow(playQueue);
+		const currentRatingKey = playQueue.currentItem.split('/').pop();
+		const currentItem = window.items.find((entry: any) => entry.guid === playQueue.currentItem || entry.ratingKey === currentRatingKey) as Metadata;
+		if (!currentItem) throw new NotFoundException();
+
+		let localItem = (await this.pmsService.resolveLocalItem([currentItem]))[0];
 		if (!localItem) {
-			const stream = await this.stremioService.resolveStream(item);
-			if (!stream || !stream?.url) throw new NotFoundException()
-			const path = await this.pmsService.addStream(item, stream?.url)
-			localItem = await this.pmsService.resolveLocalItem(item);
+			await this.appService.resolveMedia(currentItem);
+			localItem = (await this.pmsService.resolveLocalItem([currentItem]))[0];
 		}
-		if (!localItem) throw new NotFoundException()
+		if (!localItem) throw new NotFoundException();
 
-
-		const currentIndex = playQueue.items.findIndex((item) => item.ratingKey == playQueue.currentItem);
-		const currentItem = playQueue.items[currentIndex];
-
-		for (let item of playQueue.items) {
-			item.Media = emptyMedia() as any
-		}		
-
-		let currentLocalItem = await this.pmsService.resolveLocalItem(item)
-		if (currentLocalItem && currentLocalItem.Media?.[0]) {
-			currentItem.Media = [currentLocalItem.Media[0]]
-		} else {
-			currentItem.Media = emptyMedia() as any
+		for (const windowItem of window.items) {
+			windowItem.Media = emptyMedia() as any;
 		}
 
-		// playQueue.items = playQueue.items.slice(currentIndex, currentIndex+100)
+		if (localItem?.Media?.[0]) {
+			currentItem.Media = [localItem.Media[0]];
+		}
 
-		return serializePlayQueues(playQueue, false);
+		return serializePlayQueues(playQueue, window, false);
 	}
-
-	@Get('/library/metadata/:id/userState')
-	userState() {}
 
 	@Get('/:id/timeline')
 	async timeline(
@@ -169,12 +155,11 @@ export class PlayQueuesController {
 			continuing: string;
 		} & any,
 		@Headers() headers: { 'x-plex-playback-session-id': string } & any,
+		@User() user: MyPlexUser,
 	) {
 		const playbackSessionId =
 			headers['x-plex-playback-session-id'] ||
-			query['x-plex-playback-session-id'] ||
-			headers['x-plex-session-id'] ||
-			query['x-plex-session-id'];
+			headers['x-plex-session-id'];
 
 		const playQueue = await this.playQueuesService.getPlayQueueByPlaybackSession(playbackSessionId);
 
@@ -183,26 +168,43 @@ export class PlayQueuesController {
 		if (!item) throw new NotFoundException()
 
 		if (playQueue) {
-			if (playQueue.currentItem !== query.playQueueItemID) {
+			const currentRatingKey = playQueue.currentItem.split('/').pop();
+			if (currentRatingKey !== query.playQueueItemID) {
 				// //Required for some older clients, this is mainly done using /playQueues/:id?center=<play queue item id>
 				await this.playQueuesService.selectItem(playQueue.id as number, query.playQueueItemID);
 			}
 		}
 
-		let localItem = await this.pmsService.resolveLocalItem(item);
+		let localItem = (await this.pmsService.resolveLocalItem([item]))[0];
 		if (!localItem) return new NotFoundException()
 
 		query.path = localItem.key
+		query.key = localItem.key
+		// query.guid = item.guid
 		query.ratingKey = localItem.key.split('/').pop()
 
-		return await this.pmsService.plexServerApi('/:/timeline', {
+		if (query['X-Plex-Device'] === '') delete query['X-Plex-Device']
+
+		delete query['X-Plex-Token']
+		delete headers['x-plex-token']
+
+		const res = await this.pmsService.plexServerApi('/:/timeline', {
 			query,
 			headers
-		})
+		});
+
+		const viewOffset = parseInt(query.time);
+		if (!isNaN(viewOffset) && ['playing', 'paused'].includes(query.state)) {
+			await this.scrobblingService.timeline(item, user, viewOffset);
+		}
+
+		return res;
 	}
 
-	@Get('/:id/scrobble')
+	@Get(['/:id/scrobble', '/:id/unscrobble'])
 	async scrobble(
+		@Req() req: any,
+		@User() user: MyPlexUser,
 		@Query()
 		query: {
 			key: string;
@@ -215,21 +217,18 @@ export class PlayQueuesController {
 		@Headers() headers: { 'x-plex-playback-session-id': string } & any,
 	) {
 
+		const scrobble = req.path.endsWith('/scrobble');
+
 		const item = await this.metadataService.getItem(query.key);
 		if (!item) throw new NotFoundException();
 
-		let localItem = await this.pmsService.resolveLocalItem(item);
-		if (!localItem) return new NotFoundException()
+		if (scrobble) void this.scrobblingService.scrobble(item, user);
+		else void this.scrobblingService.unscrobble(item, user);
+	}
 
-		query.key = localItem.key.split('/').pop()
-
-		console.log(query)
-
-		return await this.pmsService.plexServerApi('/:/scrobble', {
-			method: 'GET',
-			query,
-			headers
-		})
+	@Put(['/:id/scrobble', '/:id/unscrobble'])
+	async scrobblePut(@Req() req: any, @Query() query: any, @User() user: MyPlexUser, @Headers() headers: { 'x-plex-playback-session-id': string } & any) {
+		return await this.scrobble(req, user, query, headers);
 	}
 
 
@@ -238,44 +237,41 @@ export class PlayQueuesController {
 		const itemId = query.path.split('/').pop()
 		let item = await this.metadataService.getItem(itemId)
 		if (!item) throw new NotFoundException()
-		let localItem = await this.pmsService.resolveLocalItem(item);
-		if (!localItem) {
-			const stream = await this.stremioService.resolveStream(item);
-			if (!stream || !stream?.url) throw new NotFoundException()
-			const path = await this.pmsService.addStream(item, stream?.url)
-			localItem = await this.pmsService.resolveLocalItem(item);
-		}
+		let localItem = (await this.pmsService.resolveLocalItem([item]))[0];
 		if (!localItem || localItem.Media?.[0] === undefined) throw new NotFoundException()
 
-		const directPlay = process.env.ALLOW_DIRECT_PLAY === 'true';
+		query.path = localItem.key
+		if (query.videoResolution === '') query.videoResolution = '1080x1080'
+		if (query['X-Plex-Device'] === '') delete query['X-Plex-Device']
+
+		delete query['X-Plex-Token'];
+		delete headers['x-plex-token'];
+		delete headers['X-Plex-Token'];
+
+		//Decision must be called on the underlying server for audio and subtitle tracks to update for the transcoder
+		const decision = await this.pmsService.plexServerApi(req.path, {
+			method: 'GET',
+			query,
+			headers
+		});
+
+		const Media = {...decision.MediaContainer?.Metadata[0].Media[0]}
+
+		if (decision.MediaContainer) {
+			decision.MediaContainer.Metadata = undefined;
+			delete decision.MediaContainer.size
+		}
 
 		return {
 			MediaContainer: new MediaContainer({
-				allowSync: true,
-
-				directPlayDecisionCode: directPlay ? 1000 : 3000,
-				directPlayDecisionText: directPlay ? 'Direct play OK.' : 'App cannot direct play this item. Direct play is disabled.',
-
-				mdeDecisionCode: directPlay ? 1000 : 3000,
-				mdeDecisionText: directPlay ? 'Direct play OK.' : 'App cannot direct play this item. Direct play is disabled.',
-
-				generalDecisionCode: directPlay ? 1000 : 1000,
-				generalDecisionText: directPlay ? 'Direct play OK.' : 'Direct play not available; Conversion OK.',
-
-				transcodeDecisionCode: !directPlay ? 1001 : undefined,
-				transcodeDecisionText: !directPlay ? 'Direct play not available; Conversion OK.' : undefined,
-
-				identifier: 'com.plexapp.plugins.library',
-
-				mediaTagPrefix: '/system/bundle/media/flags/',
-				mediaTagVersion: 1731522690,
+				...decision.MediaContainer,
 				resourceSession: query.session,
 
 				[isXML ? 'Video' : 'Metadata']: [
 					new Metadata({
 						...item,
 
-						Media: [localItem.Media[0]],
+						Media: [Media],
 					}),
 				],
 			})
@@ -289,38 +285,66 @@ export class PlayQueuesController {
 		'/video/:id/transcode/universal/start',
 	])
 	async start(@Req() req: any, @Res() res: any, @Query() query: any, @Headers() headers: any) {
-		const itemId = query.path.split('/').pop()
-		let item = await this.metadataService.getItem(itemId)
-		if (!item) throw new NotFoundException()
 
-		let localItem = await this.pmsService.resolveLocalItem(item);
-		if (!localItem) {
-			const stream = await this.stremioService.resolveStream(item);
-			if (!stream || !stream?.url) throw new NotFoundException()
-			const path = await this.pmsService.addStream(item, stream?.url)
-			localItem = await this.pmsService.resolveLocalItem(item);
+		delete query['X-Plex-Token'];
+		delete headers['x-plex-token'];
+		delete headers['X-Plex-Token'];
+		if (query['X-Plex-Device'] === '') delete query['X-Plex-Device']
+
+		//This req can be called by some clients (eg. Tizen devices) without a path query param and just an existing session ID.
+		if (query.path) {
+			const itemId = query.path.split('/').pop()
+			let item = await this.metadataService.getItem(itemId)
+			if (!item) throw new NotFoundException('Plex metadata item not found')
+
+			let localItem = (await this.pmsService.resolveLocalItem([item]))[0];
+			if (!localItem) throw new NotFoundException('Local item not found')
+
+			query.path = localItem.key
+			if (query.videoResolution === '') query.videoResolution = '1080x1080'
+	}
+
+		if (req.path.includes('.mpd') || req.path.includes('.m3u8')) {
+			const arrayBuffer = await this.pmsService.plexServerApi(req.baseUrl + req.path, {
+				query,
+				headers,
+				responseType: 'arrayBuffer'
+			});
+
+			const buffer = Buffer.from(arrayBuffer);
+
+			return res.status(200).send(buffer);
 		}
-		if (!localItem) throw new NotFoundException()
 
-		query.path = localItem.key
-		query.location = 'lan' //To prevent Plex from limiting transcode quality to 480p
-		// query.session = undefined;
-		// query['X-Plex-Session-Id'.toLowerCase()] = undefined;
-		// query['X-Plex-Playback-Session-Id'.toLowerCase()] = undefined;
-		// query['X-Plex-Playback-Id'.toLowerCase()] = undefined;
-		console.log(req.baseUrl + req.path, localItem.key)
-		let response = await this.pmsService.plexServerApi(req.baseUrl + req.path, {
+		// console.log(req.baseUrl + req.path, localItem?.key)
+		const response = await this.pmsService.plexServerApi.raw(req.baseUrl + req.path, {
 			query,
-			headers
-		})
+			headers,
+			responseType: 'stream',
+		});
 
-		// Get response array buffer or stream and send it
-		const buffer = await response.arrayBuffer();
-		res.send(Buffer.from(buffer));
+		res.status(response.status);
+
+		const contentType = response.headers.get('content-type');
+		if (contentType) res.header('Content-Type', contentType);
+
+		const contentLength = response.headers.get('content-length');
+		if (contentLength) res.header('Content-Length', contentLength);
+
+		// Stream through with backpressure
+		const nodeStream = Readable.fromWeb(response._data as any);
+		req.on('close', () => nodeStream.destroy());
+		nodeStream.pipe(res);
 	}
 
 	@Get('/library/parts/{*path}')
 	async getPart (@Req() req: any, @Res({ passthrough: true }) res: any, @Query() query: any, @Headers() headers: any) {
+		if (query['X-Plex-Device'] === '') delete query['X-Plex-Device']
+
+		delete query['X-Plex-Token'];
+		delete headers['x-plex-token'];
+		delete headers['X-Plex-Token'];
+
 		let response = await this.pmsService.plexServerApi.raw(req.path, {
 			query,
 			headers,
@@ -336,7 +360,7 @@ export class PlayQueuesController {
 
 		res.header('Accept-Ranges', 'bytes')
 
-		// 2. Extract headers from the response object
+		//Extract headers from the response object
 		const contentType = response.headers.get('content-type') || 'application/octet-stream';
 		const contentDisposition = response.headers.get('content-disposition') || undefined;
 		const contentLength = response.headers.get('content-length');

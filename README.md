@@ -1,114 +1,118 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Flex Media Server (PMS Middleware)
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Flex is a Plex middleware that connects Plex clients to Stremio providers. Here's how it works:
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+1. **Browse** - Search for a show/movie. Flex fetches metadata from Plex's discover service
+2. **Play** - Press play and Flex queries your Stremio provider for available sources
+3. **Stream** - Flex selects the first available source (with automatic fallbacks if one fails) and sends it to Plex to ingest
 
-## Description
+Flex makes no attempt to grant Plex Pass features for free - it is not a way to dodge a subscription. If you enjoy the experience, consider buying Plex Pass to support Plex.
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+Please note that this is currently in **beta**. I use it for my own Plex setup and actively update it, but things may occasionally break or behave unexpectedly. Please keep this in mind when using it.
 
-## Project setup
+## Docker Compose Setup
 
-```bash
-$ pnpm install
+Here's how to get Flex up and running.
+
+### What You'll Need
+
+- Docker and Docker Compose installed
+- **A reverse proxy (required)** - nginx, Traefik, Caddy, or something like that to expose Flex over HTTPS
+- A Plex claim token from https://www.plex.tv/claim
+
+### Ports
+
+The Flex container runs a single image containing both Plex and the Flex proxy layer:
+
+### docker-compose.yml
+
+Create a `docker-compose.yml` file with the following configuration:
+
+```yaml
+version: '3.9'
+
+services:
+    flex:
+        image: ghcr.io/flexmediaserver/flex-lite:latest
+        restart: unless-stopped
+        environment:
+            CLAIM_TOKEN: <claim token>
+            MEDIA_NOT_FOUND_VIDEO: https://flex.example.com/assets/MediaNotFound.mp4
+            STREMIO_ADDON: https://aiostreams.example.com/stremio/fcff3eeb-2cae-4924-9890-d32d856ade5b/xjXWkhjjrpDshlbARGiMscmVDrTsmiDUfQqVvfIcKiIhqVuwKiVQSiltKmwVMDYtjCKeCDzIBEQNJekIYRLAJTauErlkGtxMeXedRKFdsFlUJcbZjaHfiZpeCRqVMTiOeCbNWOEYaoygdJOpBSxNUO/manifest.json
+        volumes:
+            - ./flex:/config
 ```
 
-## Compile and run the project
+### Configuration
 
-```bash
-# development
-$ pnpm run start
+Environment variables supported by Flex:
 
-# watch mode
-$ pnpm run start:dev
+| Variable | Description |
+| -------- | ----------- |
+| `CLAIM_TOKEN` | Plex claim token from https://www.plex.tv/claim |
+| `STREMIO_ADDON` | Full Stremio addon manifest URL (required). e.g. `https://aiostreams.example.com/stremio/<token>/manifest.json` |
+| `MEDIA_NOT_FOUND_VIDEO` | HTTP path for the video returned when no media can be resolved |
+| `PLEX_SERVICE_TOKEN_SEED` | Seed for reading Plex scrobble tokens |
 
-# production mode
-$ pnpm run start:prod
+Once the Plex is running, disable Remote Access in the settings, then add a custom endpoint that points to your HTTP(S) reverse proxy.
+
+### Reverse Proxy Setup (Required)
+
+You must have a reverse proxy as Flex does not (yet) support plex.direct subdomains via https. Your reverse proxy needs to:
+
+- Expose Flex over **HTTPS**
+- Forward all requests to the Flex container at `http://flex:32404` — Flex handles passthrough to Plex and transcode sessions internally, so a single endpoint is all you need
+- You must use a dedicated subdomain
+- Handle SSL/TLS certificates (I suggest using LetsEncrypt)
+
+**Example nginx configuration (single subdomain):**
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name flex.example.com;
+
+    ssl_certificate /path/to/cert.pem;
+    ssl_certificate_key /path/to/key.pem;
+
+    location / {
+        proxy_pass http://flex:32404;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # The below properties are important for the transcoder to work properly
+        proxy_read_timeout 86400s;
+        proxy_send_timeout 86400s;
+        keepalive_timeout 86400s;
+        send_timeout 86400s;
+        proxy_buffering off;
+    }
+}
 ```
 
-## Run tests
+### Deployment
 
-```bash
-# unit tests
-$ pnpm run test
+1. Save the docker-compose.yml file wherever
+2. Edit the environment variables (especially your claim token and domain)
+3. Create a config directory:
+   ```bash
+   mkdir -p ./flex
+   ```
+4. Spin it up:
+   ```bash
+   docker-compose up -d
+   ```
+5. Set up your reverse proxy to point to the Flex container on port `32404`
+6. Tail the logs to see if anything exploded:
+   ```bash
+   docker-compose logs -f flex
+   ```
+7. Your Flex instance will be live at your reverse proxy URL (e.g., `https://flex.example.com`)
 
-# e2e tests
-$ pnpm run test:e2e
 
-# test coverage
-$ pnpm run test:cov
-```
+### Known issues
+All playback sessions are showing as my user
+ * This is because Plex only allows transiently ingested items to be accessed by the server owner's token. This will be fixed in later releases.
 
-## Deployment
-
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
-```bash
-$ pnpm install -g @nestjs/mau
-$ mau deploy
-```
-
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
-
-## Observability
-
-In production applications, observability is essential for understanding how your system behaves, detecting issues early, and maintaining reliable performance.
-
-[NestJS Observe](https://observe.nestjs.com) automatically instruments your NestJS application, giving you deep visibility into your system with minimal setup:
-
-- **Distributed tracing:** Follow requests across services and understand how they flow through your system.
-- **Waterfall analysis:** Visualize request execution and identify slow operations, bottlenecks, and unexpected delays.
-- **Performance analysis:** Analyze application performance in real time and quickly pinpoint areas that need optimization.
-- **Metrics:** Track key application and infrastructure metrics to understand system health and performance trends.
-- **Logging:** Centralize and correlate logs with traces and other telemetry to make debugging easier.
-- **Error tracking:** Detect errors quickly and investigate their root causes with the surrounding context.
-- **SLA monitoring:** Track service-level objectives and identify when your application is approaching or exceeding defined thresholds.
-- **Alarms and alerts:** Set up alerts for critical errors, performance degradation, SLA violations, and other anomalies so your team can react quickly.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Auto-instrument your application with [NestJS Observer](https://observer.nestjs.com). Distributed tracing, metrics, and logging made easy. Error tracking and performance monitoring for your NestJS applications.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+Not able to watch content locally without Plex Pass
+ * This is because the current all-in-one docker image does not support going into host networking mode. May be addressed in later updates
