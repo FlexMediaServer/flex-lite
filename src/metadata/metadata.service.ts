@@ -716,11 +716,10 @@ export class MetadataService {
 				break;
 			case ClientType.REACT_NATIVE:
 			case ClientType.ROKU:
-				metadata.Media = Media ? [Media] : undefined
-			case ClientType.WEB:
 			case ClientType.BIGSCREEN:
+			case ClientType.WEB:
 			default:
-				metadata.Media = Media ? [Media] : []
+				metadata.Media = Media ? [Media] : undefined
 				break;
 		}
 	}
