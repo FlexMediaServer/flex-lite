@@ -35,7 +35,6 @@ services:
         restart: unless-stopped
         environment:
             CLAIM_TOKEN: <claim token>
-            MEDIA_NOT_FOUND_VIDEO: https://flex.example.com/dummy.mkv
             STREMIO_ADDON: https://aiostreams.example.com/stremio/<your-token>/manifest.json
         volumes:
             - ./flex:/config
@@ -49,7 +48,7 @@ Environment variables supported by Flex:
 | -------- | ----------- |
 | `CLAIM_TOKEN` | Plex claim token from https://www.plex.tv/claim |
 | `STREMIO_ADDON` | Full Stremio addon manifest URL (required). e.g. `https://aiostreams.example.com/stremio/<token>/manifest.json` |
-| `MEDIA_NOT_FOUND_VIDEO` | URL of the video returned when no media can be resolved. Flex serves a placeholder at `/dummy.mkv`, so `https://flex.example.com/dummy.mkv` works |
+| `MEDIA_NOT_FOUND_VIDEO` | URL of the video played when no media can be resolved. Defaults to `http://localhost:<FLEX_PORT>/assets/MediaNotFound.mp4`, which points at the Flex server in the unified container. Set it only if Plex must reach Flex at a different address. Every such item shares one copy of the video, and playing it never records progress for the item |
 | `PLEX_SERVICE_TOKEN_SEED` | Seed for reading Plex scrobble tokens |
 | `PLEX_PREFERENCES_PATH` | Path to Plex's `Preferences.xml`. Flex reads the Plex server token from it. Without it, Flex's custom routes pass straight through to Plex |
 | `PLEX_BASE` | Plex server URL that Flex proxies to. Defaults to `http://localhost:32400` |

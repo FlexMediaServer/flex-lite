@@ -93,13 +93,12 @@ export class PlayQueuesController {
 		const currentRatingKey = currentItem.split('/').pop();
 		const currentItemObj = window.items.find((entry: any) => entry.guid === currentItem || entry.ratingKey === currentRatingKey) as Metadata;
 
-		const itemPath = await this.appService.resolveMedia(currentItemObj);
-		if (!itemPath) throw new NotFoundException();
+		const localItem = await this.appService.resolveMedia(currentItemObj);
+		if (!localItem) throw new NotFoundException();
 
 		for (const windowItem of window.items) {
 			if (windowItem === currentItemObj) {
-				const localItem = (await this.pmsService.resolveLocalItem([windowItem]))[0];
-				windowItem.Media = localItem?.Media?.[0] ? [localItem.Media[0]] : (emptyMedia() as any);
+				windowItem.Media = localItem.Media?.[0] ? [localItem.Media[0]] : (emptyMedia() as any);
 			} else {
 				windowItem.Media = emptyMedia() as any;
 			}
@@ -125,8 +124,7 @@ export class PlayQueuesController {
 		const currentItem = window.items.find((entry: any) => entry.guid === playQueue.currentItem || entry.ratingKey === currentRatingKey) as Metadata;
 		if (!currentItem) throw new NotFoundException();
 
-		let localItemId = await this.appService.resolveMedia(currentItem);
-		let localItem = localItemId ? (await this.pmsService.resolveLocalItem([currentItem]))[0] : undefined;
+		const localItem = await this.appService.resolveMedia(currentItem);
 		if (!localItem) throw new NotFoundException();
 
 		for (const windowItem of window.items) {
@@ -171,6 +169,9 @@ export class PlayQueuesController {
 				await this.playQueuesService.selectItem(playQueue.id as number, query.playQueueItemID);
 			}
 		}
+
+		//The shared not found copy is not this item, so its playback is not reported to Plex
+		if (await this.pmsService.isNotFoundItem(item)) return;
 
 		let localItem = (await this.pmsService.resolveLocalItem([item]))[0];
 		if (!localItem) return new NotFoundException()

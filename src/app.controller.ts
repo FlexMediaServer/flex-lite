@@ -3,6 +3,7 @@ import { AppService } from './app.service.js';
 import type express from 'express';
 import { createReadStream, stat } from 'fs';
 import { promisify } from 'util';
+import { fileURLToPath } from 'url';
 
 @Controller()
 export class AppController {
@@ -18,5 +19,11 @@ export class AppController {
 		const fileStream = createReadStream('./dummy.mp4');
 		return new StreamableFile(fileStream);
 	}
+  }
+
+  //Plex ingests this as the stand-in for items with no playable stream. Range and HEAD support come from sendFile.
+  @Get('/assets/MediaNotFound.mp4')
+  notFoundVideo (@Res() res: express.Response) {
+	res.sendFile(fileURLToPath(new URL('./assets/MediaNotFound.mp4', import.meta.url)));
   }
 }

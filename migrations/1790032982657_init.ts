@@ -44,14 +44,17 @@ export async function up(db: Kysely<any>): Promise<void> {
 			.createTable('item_mappings')
 			.addColumn('guid', 'text', (col) => col.primaryKey() )
 			.addColumn('item_id', 'text', (col) => col.notNull()) //Plex local ID
-			.addColumn('url', 'text', (col) => col.notNull().unique()) //Source URL of media
+			.addColumn('url', 'text', (col) => col.notNull()) //Source URL of media
 			.addUniqueConstraint('mapping_unique', ['guid', 'item_id', 'url'])
+			.addColumn('created_at', 'integer', (col) =>
+				dialect === 'postgres' ? col.defaultTo(sql`EXTRACT(EPOCH FROM now())::integer`) : col.defaultTo(sql`(strftime('%s', 'now'))`),
+			)
 			.execute();
 
 		await trx.schema
 			.createIndex('item_mappings_idx')
 			.on('item_mappings')
-			.columns(['guid', 'item_id', 'url'])
+			.columns(['guid', 'item_id', 'url', 'created_at'])
 			.execute();
 
 		await trx.schema.createTable('metadata')

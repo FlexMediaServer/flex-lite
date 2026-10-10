@@ -5,6 +5,11 @@ import { MetadataService } from '../metadata/metadata.service.js';
 import { ofetch } from 'ofetch';
 import { cache } from '../utils/database.js';
 import { probeUrl } from '../utils/probe-url.js';
+import { getMediaNotFoundUrl } from '../utils/media-not-found.js';
+
+//Stream resolution holds playback open, so the retry is kept to one extra attempt after a short wait
+const RESOLVE_ATTEMPTS = 2;
+const RESOLVE_RETRY_DELAY_MS = 1000;
 
 @Injectable()
 export class StremioService implements OnModuleInit {
@@ -80,33 +85,44 @@ export class StremioService implements OnModuleInit {
 		return await ofetch<{ metas: StremioMeta[] }>(url);
 	}
 
-	public async resolveStream (item: Metadata): Promise<{ url: string | undefined } | null> {
+	public async resolveStream (item: Metadata): Promise<{ url: string | undefined; notFound?: boolean } | null> {
 		const stremioId = await this.resolveStremioID(item);
 		if (!stremioId) return null;
 
-		const streams = await this.fetchAvailableStreams(stremioId, item.type === 'episode' ? 'series' : 'movie')
-		if (!streams || streams.length === 0) return { url: process.env.MEDIA_NOT_FOUND_VIDEO };
+		const type = item.type === 'episode' ? 'series' : 'movie';
 
-		// Probe each stream URL until one is found working
-		for (const stream of streams) {
-			if (!stream.url) continue;
-
-			const isWorking = await probeUrl(stream.url);
-			if (isWorking) {
-				console.debug(`Stream probe successful: ${stream.url}`);
-				return { url: stream.url };
+		//Stream lists can be empty or stale on the first try, so the retry fetches them fresh before falling back to not found
+		for (let attempt = 1; attempt <= RESOLVE_ATTEMPTS; attempt++) {
+			if (attempt > 1) {
+				console.debug(`No working stream for ${stremioId}, retrying in ${RESOLVE_RETRY_DELAY_MS}ms`);
+				await new Promise((resolve) => setTimeout(resolve, RESOLVE_RETRY_DELAY_MS));
 			}
-			console.debug(`Stream probe failed, trying next: ${stream.url}`);
+
+			const streams = await this.fetchAvailableStreams(stremioId, type, attempt > 1);
+
+			// Probe each stream URL until one is found working
+			for (const stream of streams ?? []) {
+				if (!stream.url) continue;
+
+				const isWorking = await probeUrl(stream.url);
+				if (isWorking) {
+					console.debug(`Stream probe successful: ${stream.url}`);
+					return { url: stream.url };
+				}
+				console.debug(`Stream probe failed, trying next: ${stream.url}`);
+			}
 		}
 
-		// If no working stream found, return not found URL
+		// If no working stream found after every attempt, return not found URL
 		return {
-			url: process.env.MEDIA_NOT_FOUND_VIDEO,
+			url: getMediaNotFoundUrl(),
+			notFound: true,
 		};
 	}
 
-	private async fetchAvailableStreams(id: string, type: StremioContentType = 'movie') {
-		let cachedStreams = await cache.get(`streams:${id}`);
+	private async fetchAvailableStreams(id: string, type: StremioContentType = 'movie', refresh = false) {
+		// return [];
+		let cachedStreams = refresh ? undefined : await cache.get(`streams:${id}`);
 		if (cachedStreams) return cachedStreams;
 		if (!this.addonBaseUrl) {
 			return null;
@@ -115,7 +131,8 @@ export class StremioService implements OnModuleInit {
 		const url = `${this.addonBaseUrl}/stream/${type}/${id}.json`;
 		console.debug(`Fetching streams: ${url}`);
 		let streams = (await ofetch<StremioStreamResponse>(url))?.streams;
-		await cache.set(`streams:${id}`, streams, 60 * 60 * 1000);
+		//Empty results are not cached, so a retry can still find streams the addon has added since
+		if (streams?.length) await cache.set(`streams:${id}`, streams, 60 * 60 * 1000);
 		return streams;
 	}
 

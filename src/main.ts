@@ -35,6 +35,7 @@ async function bootstrap() {
 		if (path.startsWith('/hubs')) return !PROXY.enabled;
 		if (path.startsWith('/actions/removeFromContinueWatching')) return !PROXY.enabled;
 		if (path.startsWith('/dummy.mkv')) return !PROXY.enabled;
+		if (path.startsWith('/assets/MediaNotFound.mp4')) return false; //Flex's own file, never proxied to Plex
 		if (path.startsWith('/library/parts')) return !PROXY.enabled;
 		if (path.startsWith('/:/timeline')) return !PROXY.enabled;
 		if (path.startsWith('/:/scrobble') || path.startsWith('/:/unscrobble')) return !PROXY.enabled;

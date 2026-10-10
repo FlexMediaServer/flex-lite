@@ -93,6 +93,9 @@ export class ScrobblingService implements OnApplicationBootstrap {
 		const guid = item?.guid;
 		if (!user?.id || !guid) return;
 
+		//Items served the not found video are not really played, so their progress is never recorded
+		if (await this.pmsService.isNotFoundItem(item)) return;
+
 		const now = Math.floor(Date.now() / 1000);
 		const isTimeline = update.type === 'timeline';
 		const scrobble = update.type === 'scrobble';
