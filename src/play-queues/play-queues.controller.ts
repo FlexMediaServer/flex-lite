@@ -125,11 +125,8 @@ export class PlayQueuesController {
 		const currentItem = window.items.find((entry: any) => entry.guid === playQueue.currentItem || entry.ratingKey === currentRatingKey) as Metadata;
 		if (!currentItem) throw new NotFoundException();
 
-		let localItem = (await this.pmsService.resolveLocalItem([currentItem]))[0];
-		if (!localItem) {
-			await this.appService.resolveMedia(currentItem);
-			localItem = (await this.pmsService.resolveLocalItem([currentItem]))[0];
-		}
+		let localItemId = await this.appService.resolveMedia(currentItem);
+		let localItem = localItemId ? (await this.pmsService.resolveLocalItem([currentItem]))[0] : undefined;
 		if (!localItem) throw new NotFoundException();
 
 		for (const windowItem of window.items) {

@@ -17,9 +17,16 @@ export async function up(db: Kysely<any>): Promise<void> {
 				dialect === 'postgres' ? col.defaultTo(sql`EXTRACT(EPOCH FROM now())::integer`) : col.defaultTo(sql`(strftime('%s', 'now'))`),
 			)
 			.execute();
+
+		await trx.schema
+			.createIndex('scrobble_sync_idx')
+			.on('progress')
+			.columns(['account_id', 'viewed_at', 'cursor', 'updated_at'])
+			.execute();
 	})
 }
 
 export async function down(db: Kysely<any>): Promise<void> {
 	await db.schema.dropTable('scrobble_sync').execute();
+	await db.schema.dropIndex('scrobble_sync').execute();
 }

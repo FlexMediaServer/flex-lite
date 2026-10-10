@@ -65,7 +65,7 @@ function toNormalizedQueryValue(value: unknown): NormalizedQueryValue {
 	return undefined;
 }
 
-export function normalizeQueryParams(value: unknown): Record<string, NormalizedQueryValue> {
+export function normalizeParams(value: unknown): Record<string, NormalizedQueryValue> {
 	if (value instanceof URLSearchParams) {
 		return Object.fromEntries(value.entries());
 	}

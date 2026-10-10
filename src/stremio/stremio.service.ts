@@ -4,6 +4,7 @@ import { CinemetaResponse, StremioContentType, StremioManifest, StremioManifestC
 import { MetadataService } from '../metadata/metadata.service.js';
 import { ofetch } from 'ofetch';
 import { cache } from '../utils/database.js';
+import { probeUrl } from '../utils/probe-url.js';
 
 @Injectable()
 export class StremioService implements OnModuleInit {
@@ -119,7 +120,7 @@ export class StremioService implements OnModuleInit {
 		for (const stream of streams) {
 			if (!stream.url) continue;
 
-			const isWorking = await this.probeUrl(stream.url);
+			const isWorking = await probeUrl(stream.url);
 			if (isWorking) {
 				console.debug(`Stream probe successful: ${stream.url}`);
 				return { url: stream.url };
@@ -131,23 +132,6 @@ export class StremioService implements OnModuleInit {
 		return {
 			url: process.env.MEDIA_NOT_FOUND_VIDEO,
 		};
-	}
-
-	private async probeUrl(url: string, timeoutMs: number = 5000): Promise<boolean> {
-		try {
-			const response = await ofetch(url, {
-				method: 'HEAD',
-				timeout: timeoutMs,
-				redirect: 'follow',
-				ignoreResponseError: true,
-			});
-			
-			// If HEAD request succeeds, URL is likely working
-			return true;
-		} catch (error) {
-			// Probe failed, try next URL
-			return false;
-		}
 	}
 
 	private async fetchAvailableStreams(id: string, type: StremioContentType = 'movie') {

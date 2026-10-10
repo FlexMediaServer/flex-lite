@@ -1,7 +1,7 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { Metadata } from '../dto/Metadata.entity.js';
 import { $Fetch, ofetch } from 'ofetch';
-import { normalizeQueryParams } from '../utils/request-values.js';
+import { normalizeParams } from '../utils/request-values.js';
 import EventEmitter from 'events';
 import path from 'path';
 import { readFile } from 'node:fs/promises';
@@ -25,11 +25,12 @@ export class PMSService implements OnModuleInit {
 		retryStatusCodes: [500, 429, 408], // response status codes to retry
 		timeout: 30000, // Timeout after 3 seconds
 		onRequest: ({ options }) => {
-			const plexToken = options?.query?.['X-Plex-Token'] || options?.query?.['x-plex-token'];
 			options.query = {
-				...normalizeQueryParams(options.query),
-				'X-Plex-Token': plexToken ? plexToken : this.plexToken
+				...normalizeParams(options.query),
+				'x-plex-token': this.plexToken
 			};
+
+			options.headers.set('x-plex-token', this.plexToken)
 		},
 	});
 
@@ -85,6 +86,43 @@ export class PMSService implements OnModuleInit {
 		}
 
 		return itemIds.map((itemId) => resolvedById.get((itemId && guidToItemId.get(itemId)) ?? '') ?? null);
+	}
+
+	//Returns the stream URL a local item was ingested from, or null when the item was not added through addStream.
+	async resolveMappedUrl (item: Metadata): Promise<string | null> {
+		const guid = item.guid?.split('/').pop();
+		if (!guid) return null;
+
+		const itemMapping = await db
+			.selectFrom('item_mappings')
+			.select('url')
+			.where('guid', '=', guid)
+			.executeTakeFirst();
+
+		return itemMapping?.url ?? null;
+	}
+
+	//Deletes the mapped item from the Plex server, then the mapping. Plex is deleted first so a failure keeps the mapping and the next resolve retries.
+	async removeMapping (item: Metadata) {
+		const guid = item.guid?.split('/').pop();
+		if (!guid) return;
+
+		const itemMapping = await db
+			.selectFrom('item_mappings')
+			.select('item_id')
+			.where('guid', '=', guid)
+			.executeTakeFirst();
+
+		if (itemMapping) {
+			try {
+				await this.plexServerApi(`/library/metadata/${itemMapping.item_id}`, { method: 'DELETE' });
+			} catch (error: any) {
+				//Already gone from Plex, so only the mapping needs cleaning up
+				if (error?.status !== 404) throw error;
+			}
+		}
+
+		await db.deleteFrom('item_mappings').where('guid', '=', guid).execute();
 	}
 
 	async addStream(item: Metadata, url: string) {

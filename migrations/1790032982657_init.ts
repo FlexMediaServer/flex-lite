@@ -105,8 +105,8 @@ export async function down(db: Kysely<any>): Promise<void> {
 	await transaction(db, dialect, async (trx) => {
 		await trx.schema.dropTable('item_mappings').execute();
 		await trx.schema.dropIndex('item_mappings_idx').execute();
-		await trx.schema.dropTable('item_mappings').execute();
-		await trx.schema.dropIndex('item_mappings_idx').execute();
+		await trx.schema.dropTable('progress').execute();
+		await trx.schema.dropIndex('progress_idx').execute();
 		await trx.schema.dropTable('metadata').execute();
 		await trx.schema.dropIndex('metadata_idx').execute();
 		await trx.schema.dropTable('play_queues').execute();

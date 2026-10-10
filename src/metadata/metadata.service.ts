@@ -1,6 +1,6 @@
 import { forwardRef, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { sql } from 'kysely';
-import { normalizeQueryParams, toRequestString } from '../utils/request-values.js';
+import { normalizeParams, toRequestString } from '../utils/request-values.js';
 import { ofetch, type $Fetch } from 'ofetch';
 import { cache, db, isSqlite } from '../utils/database.js';
 import { Metadata } from '../dto/Metadata.entity.js';
@@ -30,21 +30,11 @@ export class MetadataService {
 		timeout: 30000, // Timeout after 3 seconds
 		onRequest: ({ options }) => {
 			options.query = {
-				...normalizeQueryParams(options.query),
-				// 'X-Plex-Product': 'Plex Web',
-				// 'X-Plex-Version': '4.159.0',
-				// 'X-Plex-Platform': 'Chrome',
-				// 'X-Plex-Platform-Version': '146.0',
-				// 'X-Plex-Features': 'external-media,indirect-media,hub-style-list',
-				// 'X-Plex-Model': 'standalone',
-				// 'X-Plex-Device': 'Windows',
-				// 'X-Plex-Device-Screen-Resolution': '1055x1066,2195x1235',
-				'X-Plex-Token': toRequestString((options.query as any)?.['X-Plex-Token']) ?? this.pmsService.plexToken,
-				// 'X-Plex-Provider-Version': '7.2',
-				// 'X-Plex-Text-Format': 'plain',
-				// 'X-Plex-Drm': 'widevine',
-				// 'X-Plex-Language': 'en',
+				...normalizeParams(options.query),
+				'x-plex-token': this.pmsService.plexToken,
 			};
+
+			options.headers.set('x-plex-token', this.pmsService.plexToken)
 		},
 	});
 
