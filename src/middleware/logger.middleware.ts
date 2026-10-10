@@ -16,12 +16,18 @@ export class LoggerMiddleware implements NestMiddleware {
 
 			let clientType = Object.entries(ClientType)?.[(request as any)?.clientType]?.[1];
 
+			//Set by AuthenticationMiddleware, which runs after this middleware, so it is read when the response finishes
+			const user = (request as any).user as MyPlexUser | undefined;
+			const userName = user?.username ?? user?.title ?? '-';
+			const platform = request.get('x-plex-platform') ?? Object.entries(request.query).find(([key]) => key.toLowerCase() === 'x-plex-platform')?.[1];
+			const product = request.get('x-plex-product') ?? Object.entries(request.query).find(([key]) => key.toLowerCase() === 'x-plex-product')?.[1];
+
 			if (
 				!originalUrl.startsWith('/photo/:/transcode') &&
 				!originalUrl.startsWith('/media/providers') &&
 				!originalUrl.startsWith('/:/websockets/notifications')
 			)
-				console.debug(`${statusCode} ${method} ${originalUrl} \n ${contentLength} ${request.get('accept')} \n User Agent: ${userAgent} \n Client Type: ${clientType} \n IP: ${ip}`);
+				console.debug(`${statusCode} ${method} ${originalUrl} \n ${contentLength} ${request.get('accept')} \n User: ${userName} \n User Agent: ${userAgent} \n Client Type: ${clientType} \n IP: ${ip} \n Platform: ${platform} | Product: ${product}`);
 		});
 
 		next();

@@ -1,5 +1,5 @@
 import { Post, Query, Headers, Res, NotFoundException, Controller, Get, Param, InternalServerErrorException, Put, Delete, Req, StreamableFile, Header, UseGuards } from '@nestjs/common';
-import { randomInt } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 import { PlayQueuesQuery } from './play-queues.dto.js';
 import { parseKey } from '../utils/generic.js';
 import { MetadataService } from '../metadata/metadata.service.js';
@@ -16,6 +16,18 @@ import { User } from '../utils/user.decorator.js';
 import { AppService } from '../app.service.js';
 import util from 'util';
 import { LoggedInGuard } from '../middleware/logged-in.guard.js';
+
+//Clients send the playback session id under different names, either as a header or as a query param
+const SESSION_ID_NAMES = ['x-plex-playback-session-id', 'x-plex-session-identifier', 'x-plex-session-id'];
+
+export function playbackSessionIdOf(headers: Record<string, any>, query: Record<string, any> = {}): string | undefined {
+	for (const name of SESSION_ID_NAMES) {
+		const value = headers[name] ?? Object.entries(query).find(([key]) => key.toLowerCase() === name)?.[1];
+		if (value) return String(value);
+	}
+
+	return undefined;
+}
 
 @Controller()
 @UseGuards(LoggedInGuard)
@@ -40,9 +52,8 @@ export class PlayQueuesController {
 		const parsedPath = parseKey(query.key ? query.key : decodeURIComponent(new URL(query.uri).pathname));
 		const item = await this.metadataService.getItem(parsedPath.itemId) as Metadata;
 
-		const playbackSessionId =
-			headers['x-plex-playback-session-id'] ||
-			headers['x-plex-session-id'];
+		//Some clients send no session id at all. The queue still needs one, so a generated id stands in for it.
+		const playbackSessionId = playbackSessionIdOf(headers, query) ?? randomUUID();
 
 		// Only the show/movie GUID, current item GUID and internal offset are stored.
 		// Episode lists are fetched live from the Plex Discover /grandchildren endpoint.
@@ -163,11 +174,9 @@ export class PlayQueuesController {
 		@Headers() headers: { 'x-plex-playback-session-id': string } & any,
 		@User() user: MyPlexUser,
 	) {
-		const playbackSessionId =
-			headers['x-plex-playback-session-id'] ||
-			headers['x-plex-session-id'];
+		const playbackSessionId = playbackSessionIdOf(headers, query);
 
-		const playQueue = await this.playQueuesService.getPlayQueueByPlaybackSession(playbackSessionId);
+		const playQueue = playbackSessionId ? await this.playQueuesService.getPlayQueueByPlaybackSession(playbackSessionId) : undefined;
 
 		const parsedPath = parseKey(query.key);
 		const item = await this.metadataService.getItem(parsedPath.itemId);
@@ -208,6 +217,11 @@ export class PlayQueuesController {
 		}
 
 		return res;
+	}
+
+	@Post('/:id/timeline')
+	timelinePost(@Query() query: any, @Headers() headers: any, @User() user: any) {
+		return this.timeline(query, headers, user)
 	}
 
 	@Get(['/:id/scrobble', '/:id/unscrobble'])

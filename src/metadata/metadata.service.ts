@@ -52,7 +52,7 @@ export class MetadataService {
 	 * `Media` hydration runs. Pass the active request's `plexToken` so the remote user state is
 	 * fetched as the requesting user rather than the server's own account.
 	 */
-	async hydrateMetadata (metadata: Metadata[], user: MyPlexUser, plexToken?: string): Promise<Metadata[]> {
+	async hydrateMetadata (metadata: Metadata[], user: MyPlexUser): Promise<Metadata[]> {
 		if (!metadata.length) return metadata;
 
 		//Populate Media using a single batched metadata fetch.
@@ -111,7 +111,7 @@ export class MetadataService {
 	 * `lastViewedAt`) and `Media` are applied by `hydrateMetadata`, after which results are sorted
 	 * by most recently viewed.
 	 */
-	async getContinueWatching(user: MyPlexUser, plexToken?: string): Promise<Metadata[]> {
+	async getContinueWatching(user: MyPlexUser): Promise<Metadata[]> {
 		if (!user?.id) return [];
 
 		const fourWeeksAgo = Math.floor(Date.now() / 1000) - 4 * 7 * 24 * 60 * 60;
@@ -228,7 +228,7 @@ export class MetadataService {
 
 		const resolved = entries.filter((entry): entry is { item: Metadata; row: (typeof rows)[number] } => !!entry);
 
-		await this.hydrateMetadata(resolved.map(({ item }) => item), user, plexToken);
+		await this.hydrateMetadata(resolved.map(({ item }) => item), user);
 
 		return resolved
 			.map(({ item, row }) => {
@@ -702,7 +702,8 @@ export class MetadataService {
 		switch (clientType) {
 			case ClientType.NATIVE_ANDROID:
 			case ClientType.NATIVE_APPLE:
-				metadata.Media = Media ? [Media] : [emptyMedia() as any]
+			case ClientType.PLEZY:
+				metadata.Media = Media ? [Media] : [emptyMedia(metadata.ratingKey) as any]
 				break;
 			case ClientType.REACT_NATIVE:
 			case ClientType.ROKU:

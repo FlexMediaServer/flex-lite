@@ -6,7 +6,6 @@ import { MetadataService } from './metadata.service.js';
 import { Metadata } from '../dto/Metadata.entity.js';
 import { plainToInstance } from 'class-transformer';
 import { PMSService } from '../plex/plex.service.js';
-import { createPlatformMediaPlaceholder, emptyMedia } from '../utils/plex.js';
 import { Client } from '../utils/client.decorator.js';
 import { User } from '../utils/user.decorator.js';
 import { ClientType } from '../middleware/client-identifier.middleware.js';
@@ -15,6 +14,7 @@ import { cache } from '../utils/database.js';
 import { Hub } from '../dto/Hub.entity.js';
 import { AppService } from '../app.service.js';
 import { LoggedInGuard } from '../middleware/logged-in.guard.js';
+import { discoverPageSize } from './discover-page-size.js';
 
 export type DiscoverSearchResult = {
 	id: string;
@@ -71,8 +71,8 @@ export class MetadataController {
 
 
 	@Get('/hubs/continueWatching')
-	async continueWatching(@User() user: MyPlexUser, @Headers('x-plex-token') plexToken: string, @IsXML() isXML: boolean) {
-		const items = await this.metadataService.getContinueWatching(user, plexToken);
+	async continueWatching(@User() user: MyPlexUser, @IsXML() isXML: boolean) {
+		const items = await this.metadataService.getContinueWatching(user);
 
 		return {
 			MediaContainer: new MediaContainer({
@@ -96,8 +96,8 @@ export class MetadataController {
 	}
 
 	@Get('/hubs/continueWatching/items')
-	async continueWatchingItems(@User() user: MyPlexUser, @Headers('x-plex-token') plexToken: string, @IsXML() isXML: boolean) {
-		const items = await this.metadataService.getContinueWatching(user, plexToken);
+	async continueWatchingItems(@User() user: MyPlexUser, @IsXML() isXML: boolean) {
+		const items = await this.metadataService.getContinueWatching(user);
 
 		return {
 			MediaContainer: new MediaContainer({
@@ -196,7 +196,7 @@ export class MetadataController {
 			if (!itemPath) throw new NotFoundException()
 		}
 
-		await this.metadataService.hydrateMetadata([metadata], user, headers['x-plex-token']);
+		await this.metadataService.hydrateMetadata([metadata], user);
 
 		this.metadataService.applyDummyMedia(metadata, clientType)
 
@@ -224,8 +224,8 @@ export class MetadataController {
 		const children = await this.metadataService.discoverApi<{ MediaContainer?: MediaContainer }>(`/library/metadata/${params.id}/${type}`, {
 			query: {
 				excludeAllLeaves: 1,
-				'X-Plex-Container-Start': headers['x-plex-container-start'],
-				'X-Plex-Container-Size': headers['x-plex-container-size'] || 100,
+				'X-Plex-Container-Start': query['X-Plex-Container-Start'] ?? headers['x-plex-container-start'],
+				'X-Plex-Container-Size': discoverPageSize(type, query['X-Plex-Container-Size'] ?? headers['x-plex-container-size']),
 			},
 		});
 
@@ -251,7 +251,7 @@ export class MetadataController {
 		});
 
 		const metadataItems = result.Metadata || [];
-		await this.metadataService.hydrateMetadata(metadataItems, user, headers['x-plex-token']);
+		await this.metadataService.hydrateMetadata(metadataItems, user);
 
 		for (const metadata of metadataItems) {
 			this.metadataService.applyDummyMedia(metadata, clientType)

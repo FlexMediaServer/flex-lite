@@ -6,13 +6,13 @@ import { PlayQueue } from "../play-queues/play-queues.service.js";
 
 export function emptyMedia(id = "empty") {
 	return {
-		// id: id,
+		id: id,
 		// container: 'mp4',
 		// protocol: 'hls',
 		Part: [
 			{
-				// id: id,
-				key: `/library/parts/${id}/file`,
+				id: id,
+				key: `/resolve/${id}`,
 				// container: 'mp4',
 				exists: true,
 				accessible: true,
@@ -20,15 +20,6 @@ export function emptyMedia(id = "empty") {
 			},
 		],
 	};
-}
-
-
-export function createPlatformMediaPlaceholder(ratingKey: string, userAgent: string): any[] {
-	if (userAgent?.includes('PlexTV') && (userAgent?.includes('Android') || userAgent?.includes('Apple TV'))) {
-		return [emptyMedia(ratingKey)];
-	} else {
-		return [];
-	}
 }
 
 export async function serializePlayQueues(playQueue: PlayQueue, window: { items: Metadata[]; totalSize: number }, isXML: boolean = false) {

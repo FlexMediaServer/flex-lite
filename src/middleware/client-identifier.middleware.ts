@@ -13,7 +13,8 @@ export enum ClientType {
 
 	ROKU, //Roku devices
 	WEB, //Includes web and desktop clients (non-HTPC)
-	BIGSCREEN //Most vendor TV clients will fall under this. Includes HTPC client. (This is harder to identify as there is no standard identifier for this specific codebase)
+	BIGSCREEN, //Most vendor TV clients will fall under this. Includes HTPC client. (This is harder to identify as there is no standard identifier for this specific codebase)
+	PLEZY
 }
 
 /*
@@ -41,6 +42,13 @@ SamsungDASH/2.0 (;;;;;) ::ffff:172.20.0.3
 
 
 Web: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36
+
+
+Example x-plex-platform headers
+
+Roku
+Chrome
+Plezy
 */
 
 @Injectable()
@@ -52,8 +60,14 @@ export class ClientIdentifier implements NestMiddleware {
 		const userAgent = req.get('user-agent') || '';
 
 		// Detect client type based on user agent patterns
+		// Plezy identifies itself with the x-plex-platform header, so this is checked before the user agent patterns
+		const platform = req.get('x-plex-platform') ?? Object.entries(req.query).find(([key]) => key.toLowerCase() === 'x-plex-platform')?.[1];
+		const product = req.get('x-plex-product') ?? Object.entries(req.query).find(([key]) => key.toLowerCase() === 'x-plex-product')?.[1];
+		if (String(product ?? '').toLowerCase() === 'plezy') {
+			req.clientType = ClientType.PLEZY
+		}
 		// Roku detection (simple pattern)
-		if (userAgent?.includes('Roku/')) {
+		else if (userAgent?.includes('Roku/')) {
 			req.clientType = ClientType.ROKU
 		}
 		// React Native iOS (Plex/ with CFNetwork/Darwin)
