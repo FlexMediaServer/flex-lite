@@ -1,7 +1,7 @@
 FROM lscr.io/linuxserver/plex:1.43.4
 
 RUN apt-get update && \
-    apt-get install -y curl unzip wget fuse3 supervisor nodejs npm && \
+    apt-get install -y supervisor nodejs npm && \
     apt-get clean
 
 # Copy and build NestJS application
@@ -25,6 +25,6 @@ COPY docker/supervisord.conf /supervisord.conf
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-EXPOSE 32400
+EXPOSE 32400 32404
 
 ENTRYPOINT ["/entrypoint.sh"]

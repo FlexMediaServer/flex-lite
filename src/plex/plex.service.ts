@@ -2,7 +2,6 @@ import { Injectable, OnModuleInit } from '@nestjs/common';
 import { Metadata } from '../dto/Metadata.entity.js';
 import { $Fetch, ofetch } from 'ofetch';
 import { normalizeParams } from '../utils/request-values.js';
-import EventEmitter from 'events';
 import path from 'path';
 import { readFile } from 'node:fs/promises';
 import { db } from '../utils/database.js';
@@ -15,15 +14,13 @@ import { PROXY } from '../main.js';
 export class PMSService implements OnModuleInit {
 	endpoint = process.env.PLEX_BASE ?? 'http://localhost:32400'
 
-	eventBus = new EventEmitter()
-
 	public plexServerApi: $Fetch = ofetch.create({
 		baseURL: this.endpoint,
 		headers: { Accept: 'application/json' },
 		retry: 10,
 		retryDelay: 1000, // ms
 		retryStatusCodes: [500, 429, 408], // response status codes to retry
-		timeout: 30000, // Timeout after 3 seconds
+		timeout: 30000, // ms
 		onRequest: ({ options }) => {
 			options.query = {
 				...normalizeParams(options.query),
@@ -125,6 +122,8 @@ export class PMSService implements OnModuleInit {
 		await db.deleteFrom('item_mappings').where('guid', '=', guid).execute();
 	}
 
+	//Ingests a stream URL into the Plex library via POST /library/file, then matches the new item to the Plex metadata guid.
+	//The mapping is stored so later resolves reuse the same item instead of re-ingesting.
 	async addStream(item: Metadata, url: string) {
 		const guid = item.guid?.split('/').pop();
 		if (!guid) return null; // Should throw an exception
@@ -178,8 +177,6 @@ export class PMSService implements OnModuleInit {
 					.execute();
 			}
 		}
-
-		this.eventBus.emit(`imported:${guid}`, itemMappingId);
 
 		return itemMappingId;
 	}

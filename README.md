@@ -4,7 +4,7 @@ Flex is a Plex middleware that connects Plex clients to Stremio providers. Here'
 
 1. **Browse** - Search for a show/movie. Flex fetches metadata from Plex's discover service
 2. **Play** - Press play and Flex queries your Stremio provider for available sources
-3. **Stream** - Flex selects the first available source (with automatic fallbacks if one fails) and sends it to Plex to ingest
+3. **Stream** - Flex probes the available sources in order, uses the first one that responds, and registers its URL with Plex through `POST /library/file`. If no source works, a placeholder video is used instead
 
 Flex makes no attempt to grant Plex Pass features for free - it is not a way to dodge a subscription. If you enjoy the experience, consider buying Plex Pass to support Plex.
 
@@ -22,23 +22,21 @@ Here's how to get Flex up and running.
 
 ### Ports
 
-The Flex container runs a single image containing both Plex and the Flex proxy layer:
+The image runs Plex and the Flex proxy layer together. Plex listens on `32400` and Flex on `32404`. Only Flex needs to be reachable from your reverse proxy.
 
 ### docker-compose.yml
 
 Create a `docker-compose.yml` file with the following configuration:
 
 ```yaml
-version: '3.9'
-
 services:
     flex:
         image: ghcr.io/flexmediaserver/flex-lite:latest
         restart: unless-stopped
         environment:
             CLAIM_TOKEN: <claim token>
-            MEDIA_NOT_FOUND_VIDEO: https://flex.example.com/assets/MediaNotFound.mp4
-            STREMIO_ADDON: https://aiostreams.example.com/stremio/fcff3eeb-2cae-4924-9890-d32d856ade5b/xjXWkhjjrpDshlbARGiMscmVDrTsmiDUfQqVvfIcKiIhqVuwKiVQSiltKmwVMDYtjCKeCDzIBEQNJekIYRLAJTauErlkGtxMeXedRKFdsFlUJcbZjaHfiZpeCRqVMTiOeCbNWOEYaoygdJOpBSxNUO/manifest.json
+            MEDIA_NOT_FOUND_VIDEO: https://flex.example.com/dummy.mkv
+            STREMIO_ADDON: https://aiostreams.example.com/stremio/<your-token>/manifest.json
         volumes:
             - ./flex:/config
 ```
@@ -51,8 +49,12 @@ Environment variables supported by Flex:
 | -------- | ----------- |
 | `CLAIM_TOKEN` | Plex claim token from https://www.plex.tv/claim |
 | `STREMIO_ADDON` | Full Stremio addon manifest URL (required). e.g. `https://aiostreams.example.com/stremio/<token>/manifest.json` |
-| `MEDIA_NOT_FOUND_VIDEO` | HTTP path for the video returned when no media can be resolved |
+| `MEDIA_NOT_FOUND_VIDEO` | URL of the video returned when no media can be resolved. Flex serves a placeholder at `/dummy.mkv`, so `https://flex.example.com/dummy.mkv` works |
 | `PLEX_SERVICE_TOKEN_SEED` | Seed for reading Plex scrobble tokens |
+| `PLEX_PREFERENCES_PATH` | Path to Plex's `Preferences.xml`. Flex reads the Plex server token from it. Without it, Flex's custom routes pass straight through to Plex |
+| `PLEX_BASE` | Plex server URL that Flex proxies to. Defaults to `http://localhost:32400` |
+| `FLEX_PORT` | Port Flex listens on. Defaults to `32404` |
+| `DATABASE_URL` | Database for Flex's own state. Defaults to a local SQLite file (`db.sqlite`). Use `postgresql://...` for Postgres or `sqlite://<path>` for a specific SQLite file |
 
 Once the Plex is running, disable Remote Access in the settings, then add a custom endpoint that points to your HTTP(S) reverse proxy.
 

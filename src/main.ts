@@ -20,7 +20,6 @@ async function bootstrap() {
 	const TARGET_URL = process.env.PLEX_BASE ?? 'http://localhost:32400';
 
 	const pathFilter = function (path: string, req: any) {
-		// return !(path.startsWith('/transcode') && req.method === 'GET');
 		if (path.startsWith('/library/all')) return !PROXY.enabled;
 		if (path.startsWith('/hubs')) return !PROXY.enabled;
 		if (path.startsWith('/actions/removeFromContinueWatching')) return !PROXY.enabled;
@@ -34,7 +33,6 @@ async function bootstrap() {
 		if (path.startsWith('/library/metadata')) return !PROXY.enabled;
 		if (path.startsWith('/library/search')) return !PROXY.enabled;
 		if (path.startsWith('/playQueues')) return !PROXY.enabled;
-		if (path.startsWith('/webdav')) return !PROXY.enabled;
 		return true;
 	};
 
@@ -71,7 +69,8 @@ async function bootstrap() {
 		}),
 	);
 
-	await app.listen(process.env.FLEX_PORT ?? 32404);
-	console.log(`Started on port ${process.env.FLEX_PORT}`)
+	const port = process.env.FLEX_PORT ?? 32404;
+	await app.listen(port);
+	console.log(`Started on port ${port}`)
 }
 await bootstrap();

@@ -12,33 +12,6 @@ type CinemetaResponse = {
 	};
 };
 
-type TheXemMapping = {
-	result: string;
-	data: Array<{
-		scene?: {
-			season: number;
-			episode: number;
-			absolute: number;
-		};
-		anidb?: {
-			season: number;
-			episode: number;
-			absolute: number;
-		};
-		tvdb?: {
-			season: number;
-			episode: number;
-			absolute: number;
-		};
-	}>;
-};
-
-type TheXemAllNames = {
-	result: string;
-	data: Record<string, string[]>;
-	message: string;
-};
-
 export type StremioContentType = 'movie' | 'series' | 'other' | 'tv' | 'events' | 'anime';
 
 export interface StremioManifestCatalog {

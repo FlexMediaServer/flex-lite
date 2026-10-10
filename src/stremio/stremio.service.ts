@@ -1,6 +1,6 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { Metadata } from '../dto/Metadata.entity.js';
-import { CinemetaResponse, StremioContentType, StremioManifest, StremioManifestCatalog, StremioManifestCatalogWithMeta, StremioMeta, StremioStreamInfo, StremioStreamResponse, TheXemAllNames, TheXemMapping } from './stremio.js';
+import { CinemetaResponse, StremioContentType, StremioManifest, StremioManifestCatalog, StremioManifestCatalogWithMeta, StremioMeta, StremioStreamInfo, StremioStreamResponse } from './stremio.js';
 import { MetadataService } from '../metadata/metadata.service.js';
 import { ofetch } from 'ofetch';
 import { cache } from '../utils/database.js';
@@ -12,10 +12,6 @@ export class StremioService implements OnModuleInit {
 	private addonManifestUrl: string | null = null;
 	private addonBaseUrl: string | null = null;
 	private addonManifest: StremioManifest | null = null;
-
-	private xemAllNames: Record<string, string[]> | null = null;
-	private readonly XEM_REFRESH_INTERVAL_MS = 8 * 60 * 60 * 1000; // 8 hours
-	private readonly XEM_CACHE_DURATION_MS = 8 * 60 * 60 * 1000; // 8 hours
 
 	constructor (private metadataService: MetadataService) {}
 
@@ -29,16 +25,6 @@ export class StremioService implements OnModuleInit {
 		console.info(`Loaded Stremio addon manifest from ${manifestUrl}`);
 
 		this.metadataService.syncStremioCatalogs();
-
-		// //Fetch XEM allNames on initialization
-		// try {
-		// 	await this.fetchAllXemSeries();
-		// } catch (e) {
-		// 	console.error('Failed to fetch XEM series list... ', e)
-		// }
-
-		// // Set up periodic refresh
-		// setInterval(() => this.fetchAllXemSeries(), this.XEM_REFRESH_INTERVAL_MS);
 	}
 
 	private getBaseUrl(manifestUrl: string) {
@@ -94,23 +80,8 @@ export class StremioService implements OnModuleInit {
 		return await ofetch<{ metas: StremioMeta[] }>(url);
 	}
 
-	// private async fetchAllXemSeries(): Promise<void> {
-	// 	try {
-	// 		const response = await ofetch<TheXemAllNames>('https://thexem.info/map/allNames?origin=tvdb');
-	// 		if (response.result === 'success') {
-	// 			this.xemAllNames = response.data;
-	// 			console.debug(`Fetched XEM allNames successfully, ${Object.keys(response.data).length} shows mapped`);
-	// 		} else {
-	// 			console.error('XEM allNames fetch returned non-success result:', response.message);
-	// 		}
-	// 	} catch (error) {
-	// 		console.error('Failed to fetch XEM allNames:', error);
-	// 	}
-	// }
-
 	public async resolveStream (item: Metadata): Promise<{ url: string | undefined } | null> {
 		const stremioId = await this.resolveStremioID(item);
-		console.log(stremioId)
 		if (!stremioId) return null;
 
 		const streams = await this.fetchAvailableStreams(stremioId, item.type === 'episode' ? 'series' : 'movie')
@@ -155,7 +126,6 @@ export class StremioService implements OnModuleInit {
 			const show = await this.metadataService.getItem(item.grandparentRatingKey);
 			if (!show) return null;
 			const showImdbId = show.Guid?.find((guid) => guid.id.startsWith('imdb://'))?.id.replace('imdb://', '');
-			const showTvdbId = show.Guid?.find((guid) => guid.id.startsWith('tvdb://'))?.id.replace('tvdb://', '');
 
 			const cinemeta = await ofetch<CinemetaResponse>(`https://v3-cinemeta.strem.io/meta/series/${showImdbId}.json`);
 
@@ -177,42 +147,6 @@ export class StremioService implements OnModuleInit {
 				.filter((s) => s.index !== undefined && s.index > 0 && s.index < item.parentIndex)
 				.reduce((sum, s) => sum + (s.leafCount || 0), 0);
 			const absoluteEpisode = episodesBefore + (item.index ?? 0);
-
-			// console.log(showTvdbId.toString(), this.xemAllNames?.[showTvdbId.toString()], (this.xemAllNames !== undefined && this.xemAllNames[showTvdbId.toString()] !== undefined))
-
-			// if (showTvdbId && this.xemAllNames !== null && this.xemAllNames[showTvdbId.toString()] !== undefined) {
-			// 	// Try to get mapping from thexem.info using TVDB ID
-			// 	try {
-			// 		const cacheKey = `xem-mapping-${showTvdbId}`;
-			// 		let theXemData = await cache.get<TheXemMapping>(cacheKey);
-
-			// 		if (!theXemData) {
-			// 			const theXemUrl = `https://thexem.info/map/all?id=${showTvdbId}&origin=tvdb`;
-			// 			theXemData = await ofetch<TheXemMapping>(theXemUrl);
-			// 			await cache.set(cacheKey, theXemData, this.XEM_CACHE_DURATION_MS);
-			// 		}
-
-			// 		if (theXemData.result === 'success' && theXemData.data?.length > 0) {
-			// 			// // Get the show's TVDB season and episode from Plex
-			// 			// const plexSeason = item.parentIndex;
-			// 			// const plexEpisode = item.index;
-
-			// 			// Sort by tvdb.absolute and find the matching index
-			// 			const sortedMappings = theXemData.data
-			// 				.filter((m) => m.tvdb?.absolute !== undefined)
-			// 				.sort((a, b) => a.tvdb!.absolute - b.tvdb!.absolute);
-						
-			// 			const mapping = absoluteEpisode >= 0 ? sortedMappings?.[absoluteEpisode - 1] : undefined;
-
-			// 			if (mapping?.scene && showImdbId !== undefined) {
-			// 				// Cinemeta ID format: imdbid:season:episode
-			// 				stremioId = `${showImdbId}:${mapping.scene.season}:${mapping.scene.episode}`;
-			// 			}
-			// 		}
-			// 	} catch (e) {
-			// 		console.error('XEM lookup failed: ', e)
-			// 	}
-			// }
 
 			//If still not found, map to absolute number
 			if (!stremioId) {
