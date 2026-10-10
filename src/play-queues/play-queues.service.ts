@@ -177,6 +177,22 @@ export class PlayQueuesService {
 		});
 	}
 
+	/* The episode after the current one, from the given window or the next page when the current item is its last. */
+	async findNext(playQueue: PlayQueue, items: Metadata[]): Promise<{ item?: Metadata; offset: number }> {
+		const currentRatingKey = playQueue.currentItem.split('/').pop();
+		const currentIndex = items.findIndex((item) => item.guid === playQueue.currentItem || item.ratingKey === currentRatingKey);
+
+		if (currentIndex !== -1 && currentIndex + 1 < items.length) {
+			// Next item is still within the fetched window
+			return { item: items[currentIndex + 1], offset: playQueue.offset + currentIndex + 1 };
+		}
+
+		// Window is exhausted, paginate to the next page of episodes
+		const offset = currentIndex === -1 ? playQueue.offset + 1 : playQueue.offset + items.length;
+		const next = await this.fetchWindow({ ...playQueue, offset });
+		return { item: next.items[0], offset };
+	}
+
 	/* Advances the queue to the next episode, paginating the window when exhausted. */
 	async continueId(playQueueId: number, itemId?: string): Promise<string | null> {
 		const playQueue = await this.getPlayQueue(playQueueId);
@@ -188,32 +204,17 @@ export class PlayQueuesService {
 		}
 
 		const { items } = await this.fetchWindow(playQueue);
-		const currentRatingKey = playQueue.currentItem.split('/').pop();
-		const currentIndex = items.findIndex((item) => item.guid === playQueue.currentItem || item.ratingKey === currentRatingKey);
+		const next = await this.findNext(playQueue, items);
 
-		let nextItem: Metadata | undefined;
-		let nextOffset: number;
-
-		if (currentIndex !== -1 && currentIndex + 1 < items.length) {
-			// Next item is still within the fetched window
-			nextItem = items[currentIndex + 1];
-			nextOffset = playQueue.offset + currentIndex + 1;
-		} else {
-			// Window is exhausted, paginate to the next page of episodes
-			nextOffset = currentIndex === -1 ? playQueue.offset + 1 : playQueue.offset + items.length;
-			const next = await this.fetchWindow({ ...playQueue, offset: nextOffset });
-			nextItem = next.items[0];
-		}
-
-		if (!nextItem) return null;
+		if (!next.item) return null;
 
 		await this.setPlayQueue(playQueueId, {
 			...playQueue,
-			currentItem: nextItem.guid ?? nextItem.ratingKey,
-			offset: nextOffset,
+			currentItem: next.item.guid ?? next.item.ratingKey,
+			offset: next.offset,
 		});
 
-		return nextItem.ratingKey;
+		return next.item.ratingKey;
 	}
 
 	async continueSessionId(playbackSessionId: string, itemId?: string) {

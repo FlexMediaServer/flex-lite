@@ -6,7 +6,7 @@ import { MetadataService } from '../metadata/metadata.service.js';
 import { StremioService } from '../stremio/stremio.service.js';
 import { PMSService } from '../plex/plex.service.js';
 import { ScrobblingService } from '../scrobbling/scrobbling.service.js';
-import { PlayQueuesService } from './play-queues.service.js';
+import { PlayQueue, PlayQueuesService } from './play-queues.service.js';
 import { Metadata } from '../dto/Metadata.entity.js';
 import { emptyMedia, serializePlayQueues } from '../utils/plex.js';
 import { Readable } from 'node:stream';
@@ -96,6 +96,8 @@ export class PlayQueuesController {
 		const localItem = await this.appService.resolveMedia(currentItemObj);
 		if (!localItem) throw new NotFoundException();
 
+		this.prefetchNext(playQueue, window.items);
+
 		for (const windowItem of window.items) {
 			if (windowItem === currentItemObj) {
 				windowItem.Media = localItem.Media?.[0] ? [localItem.Media[0]] : (emptyMedia() as any);
@@ -105,6 +107,15 @@ export class PlayQueuesController {
 		}
 
 		return serializePlayQueues(playQueue, window, false);
+	}
+
+	//Resolves the episode after the current one in the background, so it is ready when the client transitions to it.
+	//Failures are only logged: the prefetch is an optimisation and must not affect the current item.
+	private prefetchNext(playQueue: PlayQueue, items: Metadata[]) {
+		this.playQueuesService
+			.findNext(playQueue, items)
+			.then(({ item }) => (item ? this.appService.resolveMedia(item) : undefined))
+			.catch((error) => console.error(`Prefetch of next play queue item failed: ${error?.message ?? error}`));
 	}
 
 	@Get(['/playQueues/:id'])
