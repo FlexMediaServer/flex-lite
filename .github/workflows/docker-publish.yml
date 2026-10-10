@@ -17,6 +17,12 @@ on:
 permissions:
   contents: read
 
+# Publishes share tags (latest, branch, semver), so queue them one at a time instead of letting runs overlap.
+# PR builds never push, so they get their own group and cancel superseded runs rather than queueing.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('docker-pr-{0}', github.ref) || 'docker-publish' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build:
     runs-on: ubuntu-latest
