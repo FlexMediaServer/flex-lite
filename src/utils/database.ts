@@ -1,6 +1,6 @@
 import Keyv from "keyv";
 import Database from 'better-sqlite3';
-import { Kysely, ParseJSONResultsPlugin, PostgresDialect, SqliteDialect } from 'kysely';
+import { Kysely, PostgresDialect, SqliteDialect } from 'kysely';
 import { Pool } from 'pg';
 import type { DB } from "./db.js";
 
@@ -22,9 +22,6 @@ export const isSqlite: boolean = dialect instanceof SqliteDialect;
 
 export const db = new Kysely<DB>({
 	dialect,
-	plugins: [new ParseJSONResultsPlugin()].filter((plugin) => {
-		return plugin;
-	}),
 });
 
 export const cache = new Keyv();

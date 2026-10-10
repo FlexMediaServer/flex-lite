@@ -10,6 +10,17 @@ export const PROXY = {
 	enabled: false
 };
 
+const debugFn = console.debug;
+console.debug = (...properties) => {
+	if (process.env.LOG_LEVEL === 'debug') debugFn('[DEBUG]', ...properties);
+};
+
+const infoFn = console.info;
+console.info = (...properties) => {
+	if (process.env.LOG_LEVEL === 'info' || process.env.LOG_LEVEL === 'debug') infoFn('[INFO]', ...properties);
+};
+
+
 async function bootstrap() {
 	const app = await NestFactory.create(AppModule, {
 		instrument: ObserveInstrument,
@@ -62,7 +73,7 @@ async function bootstrap() {
 				proxyReq: fixRequestBody,
 				proxyRes: responseInterceptor(async (responseBuffer, proxyRes: any, req, res) => {
 					const exchange = `[DEBUG] ${req.method} ${req.path} -> ${proxyRes.req.protocol}//${proxyRes.req.host}${proxyRes.req.path} [${proxyRes.statusCode}]`;
-					console.log(exchange); // [DEBUG] GET / -> http://www.example.com [200]
+					console.debug(exchange); // [DEBUG] GET / -> http://www.example.com [200]
 					return responseBuffer; // manipulate response and return the result
 				}),
 			},

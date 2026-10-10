@@ -453,7 +453,6 @@ export class ScrobblingService implements OnApplicationBootstrap {
 				let plexItem = await this.metadataService.getItem(item.guid?.split('/').pop() as string)
 
 				if (item.viewState === 'complete') {
-					console.log(plexItem?.ratingKey, plexItem?.guid)
 					await this.scrobble(plexItem as Metadata, {
 						id: userId
 					})
@@ -467,8 +466,6 @@ export class ScrobblingService implements OnApplicationBootstrap {
 			if (response?.pageInfo?.hasNextPage == false) break;
 
 			cursor = response?.pageInfo?.endCursor;
-
-			console.log(cursor)
 
 			await db
 				.insertInto('scrobble_sync')
