@@ -27,4 +27,10 @@ RUN chmod +x /entrypoint.sh
 
 EXPOSE 32400 32404
 
+ENV FLEX_DATABASE_URL=sqlite:///config/flex.sqlite
+ENV FLEX_PORT=32404
+ENV MEDIA_NOT_FOUND_VIDEO=http://127.0.0.1:32404/assets/MediaNotFound.mp4
+ENV PLEX_PREFERENCES_PATH="/config/Library/Application Support/Plex Media Server/Preferences.xml"
+ENV PLEX_BASE=http://127.0.0.1:32400
+
 ENTRYPOINT ["/entrypoint.sh"]
