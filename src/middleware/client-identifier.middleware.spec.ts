@@ -15,12 +15,12 @@ const CHROME = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KH
 
 describe('ClientIdentifier', () => {
 	it('detects Plezy from the x-plex-platform header, whatever its user agent', () => {
-		expect(identify({ 'x-plex-platform': 'Plezy', 'user-agent': CHROME })).toBe(ClientType.PLEZY);
-		expect(identify({ 'x-plex-platform': 'plezy' })).toBe(ClientType.PLEZY);
+		expect(identify({ 'x-plex-product': 'Plezy', 'user-agent': CHROME })).toBe(ClientType.PLEZY);
+		expect(identify({ 'x-plex-product': 'plezy' })).toBe(ClientType.PLEZY);
 	});
 
 	it('detects Plezy from a query param when no header carries it', () => {
-		expect(identify({ 'user-agent': CHROME }, { 'X-Plex-Platform': 'Plezy' })).toBe(ClientType.PLEZY);
+		expect(identify({ 'user-agent': CHROME }, { 'X-Plex-Product': 'Plezy' })).toBe(ClientType.PLEZY);
 	});
 
 	it('keeps the user agent detection for other clients', () => {

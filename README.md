@@ -38,6 +38,8 @@ services:
             STREMIO_ADDON: https://aiostreams.example.com/stremio/<your-token>/manifest.json
         volumes:
             - ./flex:/config
+            - ./media/movies:/data/movies
+            - ./media/shows:/data/shows
 ```
 
 ### Configuration
@@ -54,6 +56,15 @@ Environment variables supported by Flex:
 | `PLEX_BASE` | Plex server URL that Flex proxies to. Defaults to `http://localhost:32400` |
 | `FLEX_PORT` | Port Flex listens on. Defaults to `32404` |
 | `DATABASE_URL` | Database for Flex's own state. Defaults to a local SQLite file (`db.sqlite`). Use `postgresql://...` for Postgres or `sqlite://<path>` for a specific SQLite file |
+
+### Libraries
+
+Flex serves its library through Plex, so Plex needs two libraries created. Create them once Plex is running.
+
+| Name | Type | Folder |
+| --- | --- | --- |
+| `Movies` | Movies | `/data/movies` |
+| `TV Shows` | TV Shows | `/data/shows` |
 
 Once the Plex is running, disable Remote Access in the settings, then add a custom endpoint that points to your HTTP(S) reverse proxy.
 
