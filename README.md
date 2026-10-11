@@ -57,12 +57,12 @@ Environment variables supported by Flex:
 
 ### Libraries
 
-Flex serves its library through Plex, so Plex needs two libraries created. Create them once Plex is running.
+Flex takes over every library whose folder starts with `/virtual`, and leaves the rest to Plex. Create the libraries once Plex is running. Libraries outside `/virtual` keep working as normal Plex libraries.
 
 | Name | Type | Folder |
 | --- | --- | --- |
-| `Movies` | Movies | `/data/movies` |
-| `TV Shows` | TV Shows | `/data/shows` |
+| `Movies` | Movies | `/virtual/Movies` |
+| `TV Shows` | TV Shows | `/virtual/Shows` |
 
 Once the Plex is running, disable Remote Access in the settings, then add a custom endpoint that points to your HTTP(S) reverse proxy.
 

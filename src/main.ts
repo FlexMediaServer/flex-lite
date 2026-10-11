@@ -4,6 +4,9 @@ import { WsAdapter } from '@nestjs/platform-ws';
 import { AppModule, ObserveInstrument } from './app.module.js';
 import { createProxyMiddleware, fixRequestBody, responseInterceptor } from 'http-proxy-middleware';
 import { FormatInterceptor } from './format.interceptor.js';
+import { SectionsService } from './plex/sections.service.js';
+import { PlayQueuesService } from './play-queues/play-queues.service.js';
+import { shouldProxy } from './utils/proxy-filter.js';
 dotenv.config();
 
 export const PROXY = {
@@ -30,23 +33,15 @@ async function bootstrap() {
 	// Define your target backend or microservice URL
 	const TARGET_URL = process.env.PLEX_BASE ?? 'http://localhost:32400';
 
+	const sections = app.get(SectionsService);
+	const playQueues = app.get(PlayQueuesService);
+
 	const pathFilter = function (path: string, req: any) {
-		if (path.startsWith('/library/all')) return !PROXY.enabled;
-		if (path.startsWith('/hubs')) return !PROXY.enabled;
-		if (path.startsWith('/actions/removeFromContinueWatching')) return !PROXY.enabled;
-		if (path.startsWith('/dummy.mkv')) return !PROXY.enabled;
-		if (path.startsWith('/assets/MediaNotFound.mp4')) return false; //Flex's own file, never proxied to Plex
-		if (path.startsWith('/resolve/')) return false; //Flex's own endpoint, never proxied to Plex
-		if (path.startsWith('/library/parts')) return !PROXY.enabled;
-		if (path.startsWith('/:/timeline')) return !PROXY.enabled;
-		if (path.startsWith('/:/scrobble') || path.startsWith('/:/unscrobble')) return !PROXY.enabled;
-		if (path.startsWith('/video/:/transcode/universal/decision')) return !PROXY.enabled;
-		if (path.startsWith('/video/:/transcode/universal/start')) return !PROXY.enabled;
-		if (path.startsWith('/media/providers')) return !PROXY.enabled;
-		if (path.startsWith('/library/metadata')) return !PROXY.enabled;
-		if (path.startsWith('/library/search')) return !PROXY.enabled;
-		if (path.startsWith('/playQueues')) return !PROXY.enabled;
-		return true;
+		return shouldProxy(path, req.query, {
+			proxyEnabled: PROXY.enabled,
+			sections,
+			playQueueMissing: req.flexPlayQueueMissing === true,
+		});
 	};
 
 	app.useGlobalInterceptors(new FormatInterceptor());
@@ -59,6 +54,20 @@ async function bootstrap() {
 		// req.baseUrl = req.baseUrl.replace(/\/{2,}/g, '/');
 		req.originalUrl = req.originalUrl.replace(/\/{2,}/g, '/');
 		req.url = req.url.replace(/\/{2,}/g, '/');
+		next();
+	});
+
+	// Before routing: keep the virtual sections fresh, and flag play queues Flex does not hold so they go to Plex
+	app.use(async (req: any, res: any, next: any) => {
+		try {
+			if (PROXY.enabled) {
+				await sections.refreshIfStale();
+				const playQueueId = /^\/playQueues\/(\d+)/.exec(req.path)?.[1];
+				req.flexPlayQueueMissing = !!playQueueId && !(await playQueues.getPlayQueue(Number(playQueueId)));
+			}
+		} catch (error: any) {
+			console.error(`Could not prepare request routing: ${error?.message ?? error}`);
+		}
 		next();
 	});
 
