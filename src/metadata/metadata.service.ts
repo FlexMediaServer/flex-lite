@@ -61,7 +61,10 @@ export class MetadataService {
 
 		for (const [i, item] of mediaItems.entries()) {
 			const localItem = localItems[i];
-			if (localItem?.Media?.[0]) item.Media = [localItem.Media[0]];
+			if (localItem?.Media?.[0]) {
+				item.Media = [localItem.Media[0]];
+				item.duration = item.Media[0].duration;
+			}
 		}
 
 		if (!user?.id) return metadata;
