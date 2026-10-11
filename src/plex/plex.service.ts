@@ -189,14 +189,6 @@ export class PMSService implements OnModuleInit {
 				})
 			).MediaContainer.Metadata[0] as Metadata;
 
-			await this.plexServerApi(`${metadataItem.key}/match`, {
-				method: 'PUT',
-				query: {
-					guid: item.guid,
-					name: item.title
-				}
-			})
-
 			itemMappingId = metadataItem?.key.split('/').pop();
 
 			if (itemMappingId) {

@@ -455,6 +455,21 @@ export class MetadataController {
 		}
 	}
 
+	//Hub items are shared by every user, so each request hydrates its own copies with that user's state
+	private async hydratedHubs(hubs: Hub[], user: MyPlexUser): Promise<Hub[]> {
+		const copies = hubs.map((hub) => new Hub({ ...hub, Metadata: hub.Metadata?.map((item) => ({ ...item }) as Metadata) }));
+
+		//Only the first items of each hub are shown on the home screen
+		await this.metadataService.hydrateMetadata(copies.flatMap((hub) => hub.Metadata?.slice(0, 10) ?? []), user);
+		return copies;
+	}
+
+	private async hydratedItems(items: Metadata[], user: MyPlexUser): Promise<Metadata[]> {
+		const copies = items.map((item) => ({ ...item }) as Metadata);
+		await this.metadataService.hydrateMetadata(copies, user);
+		return copies;
+	}
+
 	//Home hubs: Flex's Stremio catalogs merged with the user's Plex hubs. A virtual section shows only Flex's hubs of its type.
 	@Get(['/hubs/promoted', '/hubs', '/hubs/sections/:library'])
 	async promoted(
@@ -465,6 +480,7 @@ export class MetadataController {
 		},
 		@IsXML() isXML: boolean,
 		@Headers() headers: any,
+		@User() user: MyPlexUser,
 	) {
 		if (query.pinnedContentDirectoryID && query.contentDirectoryID) {
 			const pinnedLibraries = query.pinnedContentDirectoryID.split(',');
@@ -472,7 +488,7 @@ export class MetadataController {
 		}
 
 		const section = this.sections.get(params.library);
-		const flex = section ? this.metadataService.hubs.filter((hub) => hub.type === section.type) : this.metadataService.hubs;
+		const flex = await this.hydratedHubs(section ? this.metadataService.hubs.filter((hub) => hub.type === section.type) : this.metadataService.hubs, user);
 		const upstream = section ? [] : await this.plexHubs('/hubs/promoted', headers);
 
 		return {
@@ -485,14 +501,14 @@ export class MetadataController {
 	}
 
 	@Get('/hubs/:id/items')
-	async getHubItems (@Param() params: any, @Query() query: any, @Headers() headers: any, @IsXML() isXML: boolean) {
+	async getHubItems (@Param() params: any, @Query() query: any, @Headers() headers: any, @IsXML() isXML: boolean, @User() user: MyPlexUser) {
 		const metadata = this.metadataService.hubs.find((hub) => hub.hubIdentifier === params.id)?.Metadata
 		const offset = parseInt(headers['x-plex-container-start']) || 0;
 		const limit = parseInt(headers['x-plex-container-size']) || 50;
 		return {
 			MediaContainer: new MediaContainer({
 				identifier: 'com.plexapp.plugins.library',
-				[isXML ? 'Video' : 'Metadata']: metadata?.slice(offset, offset+limit).map(item => {
+				[isXML ? 'Video' : 'Metadata']: (await this.hydratedItems(metadata?.slice(offset, offset+limit) ?? [], user)).map(item => {
 					delete item.Rating;
 					delete (item as Metadata & { Actor: any }).Actor;
 					delete (item as Metadata & { Collection: any }).Collection;
