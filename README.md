@@ -4,7 +4,7 @@ Flex is a Plex middleware that connects Plex clients to Stremio providers. Here'
 
 1. **Browse** - Search for a show/movie. Flex fetches metadata from Plex's discover service
 2. **Play** - Press play and Flex queries your Stremio provider for available sources
-3. **Stream** - Flex probes the available sources in order, uses the first one that responds, and registers its URL with Plex through `POST /library/file`. If no source works, a placeholder video is used instead
+3. **Stream** - Flex probes the available sources in order, uses the first one that responds, and registers its URL with the underlying Plex server. If no source works, a placeholder video is used instead
 
 Flex makes no attempt to grant Plex Pass features for free - it is not a way to dodge a subscription. If you enjoy the experience, consider buying Plex Pass to support Plex.
 
@@ -38,8 +38,6 @@ services:
             STREMIO_ADDON: https://aiostreams.example.com/stremio/<your-token>/manifest.json
         volumes:
             - ./flex:/config
-            - ./media/movies:/data/movies
-            - ./media/shows:/data/shows
 ```
 
 ### Configuration
@@ -122,9 +120,17 @@ server {
 7. Your Flex instance will be live at your reverse proxy URL (e.g., `https://flex.example.com`)
 
 
-### Known issues
-All playback sessions are showing as my user
- * This is because Plex only allows transiently ingested items to be accessed by the server owner's token. This will be fixed in later releases.
+## Tested Plex Clients
 
-Not able to watch content locally without Plex Pass
- * This is because the current all-in-one docker image does not support going into host networking mode. May be addressed in later updates
+- Plex Web
+- Android/iOS/Apple TV/Android TV (React Native)
+- Android TV (Native)
+- Roku
+- Plex HTPC
+- WebOS
+- Tizen
+- Plezy
+
+### Known issues
+Playback sessions under "Now Playing" are showing as the server owner's user
+ * This is because Plex only allows transiently ingested items to be accessed by the server owner's token. This will be fixed in later releases.
