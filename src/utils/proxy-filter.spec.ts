@@ -48,6 +48,15 @@ describe('shouldProxy', () => {
 		expect(shouldProxy('/library/search', {}, plexOnly)).toBe(true);
 	});
 
+	it('proxies hub and provider paths Flex does not serve', () => {
+		expect(shouldProxy('/hubs/sections/4/manage', {}, flex)).toBe(true);
+		expect(shouldProxy('/hubs/sections/4/manage', {}, plexOnly)).toBe(true);
+		expect(shouldProxy('/media/providers/metadata', {}, flex)).toBe(true);
+		expect(shouldProxy('/media/providers', {}, flex)).toBe(false);
+		expect(shouldProxy('/hubs/continueWatching/items', {}, flex)).toBe(false);
+		expect(shouldProxy('/hubs/metadata/68ec89c449b9526d4b7250a3/related', {}, flex)).toBe(false);
+	});
+
 	it('proxies play queues Flex does not hold', () => {
 		expect(shouldProxy('/playQueues/777', {}, { ...flex, playQueueMissing: true })).toBe(true);
 		expect(shouldProxy('/playQueues/777', {}, { ...flex, playQueueMissing: false })).toBe(false);

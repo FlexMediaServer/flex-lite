@@ -1,11 +1,14 @@
 import { Controller, Get, Headers, Query, UseGuards } from '@nestjs/common';
 import axios from 'axios';
 import { LoggedInGuard } from '../middleware/logged-in.guard.js';
+import { SectionsService } from '../plex/sections.service.js';
 
 @Controller('')
 // @UseGuards(LoggedInGuard)
 export class ProvidersController {
 	endpoint = process.env.PLEX_BASE ?? 'http://localhost:32400';
+
+	constructor (private readonly sections: SectionsService) {}
 
 	@Get('/media/providers')
 	async providers (@Headers() headers: any, @Query() query: any) {
@@ -20,8 +23,11 @@ export class ProvidersController {
 
 			for (const provider of providers)
 				for (const feature of this.toArray(provider.Feature))
-					for (const directory of this.toArray(feature.Directory))
-						directory.Pivot = this.toArray(directory.Pivot).filter((pivot: any) => pivot?.symbol !== 'library');
+					for (const directory of this.toArray(feature.Directory)) {
+						//Only virtual sections are Flex's; every other section stays real Plex
+						if (!this.sections.isVirtual(directory.id)) continue;
+						directory.Pivot = this.toArray(directory.Pivot).filter((pivot: any) => pivot?.symbol !== 'library' && pivot?.id !== 'categories');
+					}
 
 			return response.data
 		} catch (e) {}

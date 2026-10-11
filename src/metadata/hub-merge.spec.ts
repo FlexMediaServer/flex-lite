@@ -15,6 +15,12 @@ describe('uniqueByGuid', () => {
 });
 
 describe('withoutItems', () => {
+	it('accepts a hub straight from Plex JSON, which carries a size field', () => {
+		const fromPlex = { hubIdentifier: 'show', type: 'show', size: 2, Metadata: [item('a', { librarySectionID: 5 }), item('b', { librarySectionID: 2 })] } as unknown as Hub;
+
+		expect(withoutItems([fromPlex], (i) => i.librarySectionID === 2)[0].Metadata?.map((i) => i.guid)).toEqual(['a']);
+	});
+
 	it('drops items and hubs left empty', () => {
 		const hubs = withoutItems([hub('h1', 'movie', [item('a', { librarySectionID: 1 }), item('b', { librarySectionID: 3 })]), hub('h2', 'movie', [item('c', { librarySectionID: 1 })])], (i) => i.librarySectionID === 1);
 
@@ -45,11 +51,17 @@ describe('mergeContinueWatching', () => {
 
 describe('mergeSearch', () => {
 	it('appends results to the upstream hub of the same kind, or adds a hub', () => {
-		const merged = mergeSearch([hub('movies', 'movie', [item('a')])], [item('a'), item('b'), item('s', { type: 'show' })]);
+		const merged = mergeSearch([hub('movies', 'movie', [item('a')])], [item('b'), item('s', { type: 'show' })]);
 
 		expect(merged.map((h) => [h.hubIdentifier, h.Metadata?.map((i) => i.guid)])).toEqual([
 			['movies', ['a', 'b']],
 			['flex.search.show', ['s']],
 		]);
+	});
+
+	it('keeps the upstream copy and the Flex copy of the same show, one per library', () => {
+		const merged = mergeSearch([hub('shows', 'show', [item('a', { type: 'show', librarySectionID: 5 })])], [item('a', { type: 'show', librarySectionID: 2 })]);
+
+		expect(merged[0].Metadata?.map((i) => i.librarySectionID)).toEqual([5, 2]);
 	});
 });

@@ -43,17 +43,18 @@ export function mergeContinueWatching(plex: Metadata[], flex: Metadata[], limit 
 		.slice(0, limit);
 }
 
-//Search results join the upstream hub of the same kind, or get a hub of their own
+//Search results join the upstream hub of the same kind, or get a hub of their own.
+//Upstream and Flex copies of one show are both kept: each sits in its own library.
 export function mergeSearch(upstream: Hub[], results: Metadata[]): Hub[] {
 	const hubs = [...upstream];
 
 	for (const type of ['movie', 'show'] as const) {
-		const items = results.filter((item) => (item.type === 'movie' ? 'movie' : 'show') === type);
+		const items = uniqueByGuid(results.filter((item) => (item.type === 'movie' ? 'movie' : 'show') === type));
 		if (!items.length) continue;
 
 		const index = hubs.findIndex((hub) => hub.type === type);
 		if (index >= 0) {
-			hubs[index] = new Hub({ ...hubs[index], Metadata: uniqueByGuid([...(hubs[index].Metadata ?? []), ...items]) });
+			hubs[index] = new Hub({ ...hubs[index], Metadata: [...(hubs[index].Metadata ?? []), ...items] });
 		} else {
 			hubs.push(
 				new Hub({

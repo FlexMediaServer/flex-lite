@@ -130,7 +130,8 @@ export class MetadataController {
 			this.discoverSearch(query.query),
 		]);
 
-		const searchResults = uniqueByGuid([...local, ...discover]).map((metadata) => ({ Metadata: metadata }));
+		//Each library keeps its own copy of a show, so the local and virtual results are listed separately
+		const searchResults = [...local, ...discover].map((metadata) => ({ Metadata: metadata }));
 
 		return {
 			MediaContainer: {

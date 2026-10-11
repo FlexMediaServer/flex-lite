@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { Metadata } from '../dto/Metadata.entity.js';
 import { PMSService } from './plex.service.js';
+import { isLocalId } from '../utils/item-id.js';
 
 export type VirtualSection = { key: number; title: string; type: 'movie' | 'show' };
 
@@ -35,8 +36,12 @@ export class SectionsService {
 		return kind ? this.sections.find((section) => section.type === kind) : undefined;
 	}
 
-	//Stamps the item with the section it belongs to, by its type
+	//Stamps the item with the section it belongs to, by its type. Plex's own items keep the section Plex gave them:
+	//local ratingKeys are Plex's, and a real librarySectionID is Plex's filing (Flex's Discover ids are never numeric)
 	stamp<T extends Metadata>(item: T): T {
+		if (isLocalId(item.ratingKey?.split('/').pop() ?? '')) return item;
+		if (item.librarySectionID !== undefined && !this.isVirtual(item.librarySectionID)) return item;
+
 		const section = this.sectionFor(item);
 		if (section) {
 			Object.assign(item, {

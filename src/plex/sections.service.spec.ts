@@ -48,6 +48,10 @@ describe('SectionsService', () => {
 		expect(sections.stamp({ type: 'clip' } as Metadata).librarySectionID).toBeUndefined();
 	});
 
+	it('keeps the real section of a Plex item instead of filing it under the virtual one', () => {
+		expect(sections.stamp({ type: 'show', librarySectionID: 5, librarySectionTitle: 'Home Videos' } as Metadata)).toMatchObject({ librarySectionID: 5, librarySectionTitle: 'Home Videos' });
+	});
+
 	it('names a container section only when all items share one', () => {
 		expect(sections.containerOf([{ type: 'episode' }, { type: 'season' }] as Metadata[])).toEqual({ librarySectionID: 2, librarySectionTitle: 'TV Shows' });
 		expect(sections.containerOf([{ type: 'episode' }, { type: 'movie' }] as Metadata[])).toEqual({});

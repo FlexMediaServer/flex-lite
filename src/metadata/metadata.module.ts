@@ -8,7 +8,7 @@ import { AppModule } from '../app.module.js';
 import { ScrobblingModule } from '../scrobbling/scrobbling.module.js';
 
 @Module({
-  imports: [PlexModule, StremioModule, forwardRef(() => AppModule), ScrobblingModule],
+  imports: [forwardRef(() => PlexModule), StremioModule, forwardRef(() => AppModule), ScrobblingModule],
   controllers: [MetadataController, ResolveController],
   providers: [MetadataService],
   exports: [MetadataService]

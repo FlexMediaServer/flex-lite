@@ -7,7 +7,7 @@ export type ProxyState = {
 	playQueueMissing?: boolean; //Play queue is not held by Flex, so it belongs to Plex
 };
 
-//Routes Flex serves once it has a Plex token. Everything not listed here is proxied straight to Plex.
+//Routes Flex serves once it has a Plex token, matched by prefix. Everything not listed here is proxied straight to Plex.
 const FLEX_ROUTES = [
 	'/library/all',
 	'/library/parts',
@@ -16,12 +16,17 @@ const FLEX_ROUTES = [
 	'/:/unscrobble',
 	'/video/:/transcode/universal/decision',
 	'/video/:/transcode/universal/start',
-	'/media/providers',
 	'/library/metadata',
 	'/playQueues',
 	'/dummy.mkv',
 	'/actions/removeFromContinueWatching',
 ];
+
+//Flex serves only these exact paths. Anything beneath them (eg. /media/providers/metadata) is Plex's.
+const FLEX_EXACT_ROUTES = ['/media/providers'];
+
+//The hub paths Flex serves. Other /hubs paths (eg. /hubs/sections/4/manage) are Plex's.
+const FLEX_HUB_ROUTE = /^\/hubs(?:\/(?:promoted|search|continueWatching|sections\/[^/]+|[^/]+\/items|metadata\/[^/]+\/related))?$/;
 
 //true: proxy to Plex. false: Flex handles the request.
 export function shouldProxy(path: string, query: Record<string, any>, state: ProxyState): boolean {
@@ -36,8 +41,10 @@ export function shouldProxy(path: string, query: Record<string, any>, state: Pro
 	const override = /^\/(?:library\/sections\/([^/]+)\/(?:all|recentlyAdded)|hubs\/sections\/([^/]+))$/.exec(path);
 	if (override) return !state.sections.isVirtual(override[1] ?? override[2]);
 
-	if (path.startsWith('/hubs') || path.startsWith('/library/search')) return !state.sections.enabled;
+	if (path.startsWith('/library/search')) return !state.sections.enabled;
+	if (path.startsWith('/hubs')) return !(state.sections.enabled && FLEX_HUB_ROUTE.test(path));
 	if (state.playQueueMissing && /^\/playQueues\/\d+/.test(path)) return true;
+	if (FLEX_EXACT_ROUTES.includes(path)) return false;
 
 	return !FLEX_ROUTES.some((route) => path.startsWith(route));
 }

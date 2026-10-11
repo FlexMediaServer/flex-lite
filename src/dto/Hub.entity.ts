@@ -30,6 +30,9 @@ export class Hub {
 	}
 
 	constructor(values: Partial<Hub>) {
-		Object.assign(this, values);
+		//size is derived from the items, and Plex's copy of it would hit the getter-only property
+		const fields = { ...values };
+		delete fields.size;
+		Object.assign(this, fields);
 	}
 }
