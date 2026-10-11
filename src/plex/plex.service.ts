@@ -38,6 +38,19 @@ export class PMSService implements OnModuleInit {
 
 	constructor() {}
 
+	//Calls the Plex server as the requesting user, so per-user results (continue watching, search) match what that user sees
+	plexUserApi(token: string): $Fetch {
+		return ofetch.create({
+			baseURL: this.endpoint,
+			headers: { Accept: 'application/json' },
+			timeout: 30000, // ms
+			onRequest: ({ options }) => {
+				options.query = { ...normalizeParams(options.query), 'x-plex-token': token };
+				options.headers.set('x-plex-token', token);
+			},
+		});
+	}
+
 	public plexToken: string;
 
 	async onModuleInit() {

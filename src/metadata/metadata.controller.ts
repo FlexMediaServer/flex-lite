@@ -15,6 +15,10 @@ import { Hub } from '../dto/Hub.entity.js';
 import { AppService } from '../app.service.js';
 import { LoggedInGuard } from '../middleware/logged-in.guard.js';
 import { discoverPageSize } from './discover-page-size.js';
+import { SectionsService } from '../plex/sections.service.js';
+import { isLocalId } from '../utils/item-id.js';
+import { toRequestString } from '../utils/request-values.js';
+import { mergeContinueWatching, mergeHubs, mergeSearch, uniqueByGuid, withoutItems } from './hub-merge.js';
 
 export type DiscoverSearchResult = {
 	id: string;
@@ -22,6 +26,8 @@ export type DiscoverSearchResult = {
 		Metadata?: Metadata;
 	}>;
 };
+
+const tokenOf = (headers: any) => toRequestString(headers['x-plex-token']) ?? '';
 
 @Controller()
 @UseGuards(LoggedInGuard)
@@ -31,17 +37,39 @@ export class MetadataController {
 		private readonly metadataService: MetadataService,
 		private readonly stremioService: StremioService,
 		private readonly pmsService: PMSService,
+		private readonly sections: SectionsService,
 	) {}
 
 	public async onModuleInit(): Promise<void> {
-		
+
 	}
 
-	@Get('/library/search')
-	async search(@Query() query: { query: string }) {
+	//Items the requesting user has on the real Plex server, minus those inside virtual sections (Flex serves those by Discover id)
+	private async plexMetadata(path: string, headers: any): Promise<Metadata[]> {
+		try {
+			const response = await this.pmsService.plexUserApi(tokenOf(headers))(path);
+			return (response?.MediaContainer?.Metadata ?? []).filter((item: Metadata) => !this.sections.isVirtual(item.librarySectionID));
+		} catch (error: any) {
+			console.error(`Plex ${path} failed: ${error?.message ?? error}`);
+			return [];
+		}
+	}
+
+	private async plexHubs(path: string, headers: any, query?: Record<string, any>): Promise<Hub[]> {
+		try {
+			const response = await this.pmsService.plexUserApi(tokenOf(headers))(path, { query });
+			return withoutItems(response?.MediaContainer?.Hub ?? [], (item) => this.sections.isVirtual(item.librarySectionID));
+		} catch (error: any) {
+			console.error(`Plex ${path} failed: ${error?.message ?? error}`);
+			return [];
+		}
+	}
+
+	//Discover search results for a query, as Metadata
+	private async discoverSearch(query: string): Promise<Metadata[]> {
 		const response = await this.metadataService.discoverApi<{ MediaContainer: { SearchResults: DiscoverSearchResult[] } }>('/library/search', {
 			query: {
-				query: query.query,
+				query,
 				limit: 30,
 				searchTypes: 'availabilityPlatforms,categories,movies,people,tvod,tv',
 				searchProviders: 'discover,plexAVOD,plexTVOD',
@@ -51,28 +79,96 @@ export class MetadataController {
 		});
 
 		const externalSearch = response.MediaContainer.SearchResults.find((result) => result.id === 'external');
-		const searchResults = externalSearch?.SearchResult?.filter((searchResult) => searchResult.Metadata !== undefined) ?? [];
+		return (externalSearch?.SearchResult ?? []).flatMap((result) => {
+			if (!result.Metadata) return [];
+
+			(result.Metadata as any).source = undefined;
+			return [this.sections.stamp(result.Metadata)];
+		});
+	}
+
+	//Trims each hub to its first ten items and strips the fields home screens do not use
+	private trimHubs(hubs: Hub[], isXML: boolean): Hub[] {
+		return hubs.map((hub) => {
+			const result = new Hub({ ...hub });
+
+			if (result.Metadata !== undefined) {
+				const metadata = result.Metadata?.slice(0, 10).map((item) => {
+					delete item.Rating;
+					delete (item as Metadata & { Actor: any }).Actor;
+					delete (item as Metadata & { Collection: any }).Collection;
+					delete (item as Metadata & { Country: any }).Country;
+					delete (item as Metadata & { Label: any }).Label;
+					delete (item as Metadata & { Mood: any }).Mood;
+					delete (item as Metadata & { Part: any }).Part;
+					delete (item as Metadata & { Producer: any }).Producer;
+					delete (item as Metadata & { Similar: any }).Similar;
+					delete (item as Metadata & { Photo: any }).Photo;
+					return this.sections.stamp(item);
+				}) ?? [];
+
+				if (result.Metadata.length > 10) {
+					result.more = true;
+				}
+
+				if (isXML) {
+					delete result.Metadata;
+					result.Video = metadata;
+				} else {
+					result.Metadata = metadata;
+				}
+			}
+
+			return result;
+		});
+	}
+
+	@Get('/library/search')
+	async search(@Query() query: { query: string }, @Headers() headers: any) {
+		const [local, discover] = await Promise.all([
+			this.plexHubs('/hubs/search', headers, { query: query.query, limit: 30 }).then((hubs) => hubs.flatMap((hub) => hub.Metadata ?? [])),
+			this.discoverSearch(query.query),
+		]);
+
+		const searchResults = uniqueByGuid([...local, ...discover]).map((metadata) => ({ Metadata: metadata }));
 
 		return {
 			MediaContainer: {
-				size: searchResults ? searchResults.length : 0,
-				SearchResult: await Promise.all(
-					searchResults?.map((result) => {
-						if (result.Metadata) {
-							result.Metadata.librarySectionTitle = 'Flex';
-							(result.Metadata as any).source = undefined;
-						}
-						return result;
-					}),
-				),
+				size: searchResults.length,
+				SearchResult: searchResults,
 			},
 		};
 	}
 
+	@Get('/hubs/search')
+	async hubsSearch(@Query() query: { query: string }, @Headers() headers: any, @IsXML() isXML: boolean) {
+		const [upstream, discover] = await Promise.all([
+			this.plexHubs('/hubs/search', headers, { query: query.query, limit: 30 }),
+			this.discoverSearch(query.query),
+		]);
+
+		return {
+			MediaContainer: new MediaContainer({
+				identifier: 'com.plexapp.plugins.library',
+				allowSync: true,
+				Hub: this.trimHubs(mergeSearch(upstream, discover), isXML),
+			}),
+		};
+	}
+
+	//Continue Watching from the user's Plex server and Flex's own progress, most recently viewed first
+	private async continueWatchingItems(user: MyPlexUser, headers: any): Promise<Metadata[]> {
+		const [plex, flex] = await Promise.all([
+			this.plexMetadata('/hubs/continueWatching/items', headers),
+			this.metadataService.getContinueWatching(user),
+		]);
+
+		return mergeContinueWatching(plex, flex);
+	}
 
 	@Get('/hubs/continueWatching')
-	async continueWatching(@User() user: MyPlexUser, @IsXML() isXML: boolean) {
-		const items = await this.metadataService.getContinueWatching(user);
+	async continueWatching(@User() user: MyPlexUser, @IsXML() isXML: boolean, @Headers() headers: any) {
+		const items = await this.continueWatchingItems(user, headers);
 
 		return {
 			MediaContainer: new MediaContainer({
@@ -96,8 +192,8 @@ export class MetadataController {
 	}
 
 	@Get('/hubs/continueWatching/items')
-	async continueWatchingItems(@User() user: MyPlexUser, @IsXML() isXML: boolean) {
-		const items = await this.metadataService.getContinueWatching(user);
+	async continueWatchingItemsRoute(@User() user: MyPlexUser, @Headers() headers: any) {
+		const items = await this.continueWatchingItems(user, headers);
 
 		return {
 			MediaContainer: new MediaContainer({
@@ -144,20 +240,41 @@ export class MetadataController {
 		}
 
 		if (!item) throw new NotFoundException();
-		const metadata = new Metadata(item);
-
-		metadata.librarySectionTitle = 'Flex';
-		metadata.librarySectionID = 2;
-		metadata.librarySectionKey = '/library/sections/2';
+		const metadata = this.sections.stamp(new Metadata(item));
 
 		return {
 			MediaContainer: new MediaContainer({
 				identifier: 'com.plexapp.plugins.library',
-				librarySectionID: 2,
+				...this.sections.containerOf([metadata]),
 				allowSync: false,
-				Metadata: [metadata].filter((item) => item),
+				Metadata: [metadata],
 			})
 		}
+	}
+
+	//Items of a virtual section: Flex's own items whose type belongs to that section
+	@Get(['/library/sections/:key/all', '/library/sections/:key/recentlyAdded'])
+	sectionItems(@Param() params: { key: string }, @Headers() headers: any, @IsXML() isXML: boolean) {
+		const section = this.sections.get(params.key);
+		if (!section) throw new NotFoundException();
+
+		const items = uniqueByGuid(this.metadataService.hubs.flatMap((hub) => hub.Metadata ?? []))
+			.map((item) => this.sections.stamp(item))
+			.filter((item) => item.librarySectionID === section.key);
+		const offset = parseInt(headers['x-plex-container-start']) || 0;
+		const limit = parseInt(headers['x-plex-container-size']) || 50;
+		const page = items.slice(offset, offset + limit);
+
+		return {
+			MediaContainer: new MediaContainer({
+				identifier: 'com.plexapp.plugins.library',
+				...this.sections.containerOf(page),
+				allowSync: false,
+				totalSize: items.length,
+				offset,
+				[isXML ? 'Video' : 'Metadata']: page,
+			}),
+		};
 	}
 
 	@Get('/library/metadata/:id/subtitles')
@@ -178,16 +295,44 @@ export class MetadataController {
 		})
 	}
 
+	//Batch lookup of mixed ids (eg. a hub's items). Local ids come from the Plex server, Discover ids from Flex.
+	private async metadataList(ids: string[], headers: any, user: MyPlexUser, isXML: boolean) {
+		const localIds = ids.filter(isLocalId);
+		const local = new Map<string, Metadata>();
+
+		if (localIds.length) {
+			const response = await this.pmsService.plexUserApi(tokenOf(headers))(`/library/metadata/${localIds.join(',')}`);
+			for (const item of response?.MediaContainer?.Metadata ?? []) local.set(String(item.ratingKey), item);
+		}
+
+		const found = await Promise.all(ids.map(async (id) => (isLocalId(id) ? local.get(id) : this.metadataService.getItem(id))));
+		const flexItems = found.filter((item, index) => item && !isLocalId(ids[index])) as Metadata[];
+		await this.metadataService.hydrateMetadata(flexItems, user);
+
+		const items = found.filter((item): item is Metadata => !!item);
+
+		return {
+			MediaContainer: new MediaContainer({
+				identifier: 'com.plexapp.plugins.library',
+				...this.sections.containerOf(items),
+				allowSync: true,
+				[isXML ? 'Video' : 'Metadata']: items.map((item) => new Metadata(item)),
+			}),
+		};
+	}
+
 	@Get('/library/metadata/:id')
 	async metadata(@User() user: MyPlexUser, @Headers() headers: any, @Query() query: any, @Param() params: any, @IsXML() isXML: boolean, @Client() clientType: ClientType) {
+		if (params.id.includes(',')) return this.metadataList(params.id.split(','), headers, user, isXML);
+
 		let metadata = await this.metadataService.getItem(params.id);
 		if (!metadata) throw new NotFoundException();
-		
+
 		//Forces stream resolution. This fixes an issue that prevents playback from starting when going to next item in play queue. Currently only targets web and roku, however some other clients may need this enabled as well.
 		if (
 			(
-				(clientType === ClientType.ROKU && headers['x-plex-playback-session-id']) || 
-				(clientType === ClientType.WEB && headers['x-plex-playback-id']) || 
+				(clientType === ClientType.ROKU && headers['x-plex-playback-session-id']) ||
+				(clientType === ClientType.WEB && headers['x-plex-playback-id']) ||
 				(clientType === ClientType.BIGSCREEN && headers['x-plex-playback-id']) ||
 				(clientType === ClientType.NATIVE_ANDROID && query.checkFiles == '1' && query.asyncAugmentMetadata !== '1')
 			) && (metadata.type === 'episode' || metadata.type === 'movie')
@@ -203,7 +348,7 @@ export class MetadataController {
 		return {
 			MediaContainer: new MediaContainer({
 				identifier: 'com.plexapp.plugins.library',
-				librarySectionID: 2,
+				...this.sections.containerOf([metadata]),
 				allowSync: true,
 				[isXML ? 'Video' : 'Metadata']: [new Metadata(metadata)],
 			})
@@ -236,14 +381,14 @@ export class MetadataController {
 				delete metadata.Media;
 			}
 
-			return metadata;
+			return this.sections.stamp(metadata);
 		});
 
 		const result = plainToInstance(MediaContainer, {
 			...children.MediaContainer,
 			Metadata: metadata,
 			identifier: 'com.plexapp.plugins.library',
-			librarySectionID: 2,
+			...this.sections.containerOf(metadata ?? []),
 			allowSync: true,
 			totalSize: children.MediaContainer?.totalSize !== undefined
 				? children.MediaContainer.totalSize - ((children.MediaContainer.Metadata?.length ?? 0) - (metadata?.length ?? 0))
@@ -273,66 +418,46 @@ export class MetadataController {
 			},
 		});
 
+		//Related hubs mix sections, so the container carries no section
+		const hubs: Hub[] = (related?.MediaContainer?.Hub ?? []).map((hub: Hub) => {
+			hub.Metadata?.forEach((item) => this.sections.stamp(item));
+			return hub;
+		});
+
 		return {
 			MediaContainer: new MediaContainer({
 				identifier: 'com.plexapp.plugins.library',
-				librarySectionID: 2,
 				allowSync: true,
-				Hub: related?.MediaContainer?.Hub,
+				Hub: hubs,
 			})
 		}
 	}
 
-	//Define hubs for user's homepage
+	//Home hubs: Flex's Stremio catalogs merged with the user's Plex hubs. A virtual section shows only Flex's hubs of its type.
 	@Get(['/hubs/promoted', '/hubs', '/hubs/sections/:library'])
-	promoted(
+	async promoted(
+		@Param() params: { library?: string },
 		@Query() query: {
 			contentDirectoryID: string;
 			pinnedContentDirectoryID: string; //Split by comma
 		},
 		@IsXML() isXML: boolean,
+		@Headers() headers: any,
 	) {
 		if (query.pinnedContentDirectoryID && query.contentDirectoryID) {
 			const pinnedLibraries = query.pinnedContentDirectoryID.split(',');
 			if (query.contentDirectoryID !== pinnedLibraries[0] && query.contentDirectoryID !== query.pinnedContentDirectoryID) return;
 		}
 
+		const section = this.sections.get(params.library);
+		const flex = section ? this.metadataService.hubs.filter((hub) => hub.type === section.type) : this.metadataService.hubs;
+		const upstream = section ? [] : await this.plexHubs('/hubs/promoted', headers);
+
 		return {
 			MediaContainer: new MediaContainer({
 				identifier: 'com.plexapp.plugins.library',
 				allowSync: true,
-				Hub: this.metadataService.hubs.map((hub) => {
-					const result = new Hub({ ...hub });
-
-					if (result.Metadata !== undefined) {
-						const metadata = result.Metadata?.slice(0, 10).map(item => {
-							delete item.Rating;
-							delete (item as Metadata & { Actor: any }).Actor;
-							delete (item as Metadata & { Collection: any }).Collection;
-							delete (item as Metadata & { Country: any }).Country;
-							delete (item as Metadata & { Label: any }).Label;
-							delete (item as Metadata & { Mood: any }).Mood;
-							delete (item as Metadata & { Part: any }).Part;
-							delete (item as Metadata & { Producer: any }).Producer;
-							delete (item as Metadata & { Similar: any }).Similar;
-							delete (item as Metadata & { Photo: any }).Photo;
-							return item
-						}) ?? [];
-
-						if (result.Metadata.length > 10) {
-							result.more = true;
-						}
-
-						if (isXML) {
-							delete result.Metadata;
-							result.Video = metadata
-						} else {
-							result.Metadata = metadata
-						}
-					}
-
-					return result;
-				})
+				Hub: this.trimHubs(mergeHubs(upstream, flex), isXML),
 			})
 		}
 	}
@@ -356,7 +481,7 @@ export class MetadataController {
 					delete (item as Metadata & { Producer: any }).Producer;
 					delete (item as Metadata & { Similar: any }).Similar;
 					delete (item as Metadata & { Photo: any }).Photo;
-					return item
+					return this.sections.stamp(item)
 				}) ?? [],
 				totalSize: metadata?.length,
 				offset: offset

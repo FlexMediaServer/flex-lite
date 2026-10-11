@@ -13,11 +13,12 @@ import { StremioMeta } from '../stremio/stremio.js';
 import { ScrobblingService } from '../scrobbling/scrobbling.service.js';
 import { ClientType } from '../middleware/client-identifier.middleware.js';
 import { emptyMedia } from '../utils/plex.js';
+import { SectionsService } from '../plex/sections.service.js';
 
 @Injectable()
 export class MetadataService {
 
-	constructor (private pmsService: PMSService, @Inject(forwardRef(() => StremioService)) private stremioService: StremioServiceType, private scrobblingService: ScrobblingService) {}
+	constructor (private pmsService: PMSService, @Inject(forwardRef(() => StremioService)) private stremioService: StremioServiceType, private scrobblingService: ScrobblingService, private sections: SectionsService) {}
 
 	public hubs: Hub[] = [];
 
@@ -643,7 +644,7 @@ export class MetadataService {
 
 		if (!item) return null;
 
-		return item;
+		return this.sections.stamp(item);
 	}
 
 	async getItemChildren(id: string, limit = 100, offset = 0): Promise<Metadata[] | null> {
@@ -668,7 +669,7 @@ export class MetadataService {
 			}
 		}
 
-		return result?.MediaContainer?.Metadata as Metadata[];
+		return (result?.MediaContainer?.Metadata as Metadata[] | undefined)?.map((item) => this.sections.stamp(item)) ?? null;
 	}
 
 
@@ -695,7 +696,7 @@ export class MetadataService {
 		}
 
 		return {
-			metadata: (result?.MediaContainer?.Metadata ?? []) as Metadata[],
+			metadata: ((result?.MediaContainer?.Metadata ?? []) as Metadata[]).map((item) => this.sections.stamp(item)),
 			totalSize: result?.MediaContainer?.totalSize ?? 0,
 		};
 	}
