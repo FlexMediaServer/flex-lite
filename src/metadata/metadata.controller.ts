@@ -10,7 +10,9 @@ import { Client } from '../utils/client.decorator.js';
 import { User } from '../utils/user.decorator.js';
 import { ClientType } from '../middleware/client-identifier.middleware.js';
 import { StremioService } from '../stremio/stremio.service.js';
-import { cache } from '../utils/database.js';
+import { cache, db } from '../utils/database.js';
+import { playbackUserOf } from '../status/playback-sessions.js';
+import { rewriteSession } from '../status/sessions.js';
 import { Hub } from '../dto/Hub.entity.js';
 import { AppService } from '../app.service.js';
 import { LoggedInGuard } from '../middleware/logged-in.guard.js';
@@ -139,6 +141,25 @@ export class MetadataController {
 				SearchResult: searchResults,
 			},
 		};
+	}
+
+	//Now Playing: Plex reports Flex-served items as their Plex copy under the owner. Swap in Flex's item and the real viewer.
+	@Get('/status/sessions')
+	async sessions(@Headers() headers: any) {
+		const response = await this.pmsService.plexUserApi(tokenOf(headers))('/status/sessions');
+		const container = response?.MediaContainer ?? {};
+
+		const sessions = await Promise.all(
+			(container.Metadata ?? []).map(async (session: any) => {
+				const mapping = await db.selectFrom('item_mappings').select('guid').where('item_id', '=', String(session.ratingKey)).executeTakeFirst();
+				const flexItem = mapping ? await this.metadataService.getItem(mapping.guid) : null;
+				const viewer = playbackUserOf(session.Player?.playbackSessionId);
+
+				return rewriteSession(session, flexItem ? this.sections.stamp(flexItem) : undefined, viewer);
+			}),
+		);
+
+		return { MediaContainer: { ...container, size: sessions.length, Metadata: sessions } };
 	}
 
 	@Get('/hubs/search')

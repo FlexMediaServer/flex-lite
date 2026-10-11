@@ -55,6 +55,7 @@ describe('shouldProxy', () => {
 		expect(shouldProxy('/media/providers', {}, flex)).toBe(false);
 		expect(shouldProxy('/hubs/continueWatching/items', {}, flex)).toBe(false);
 		expect(shouldProxy('/hubs/metadata/68ec89c449b9526d4b7250a3/related', {}, flex)).toBe(false);
+		expect(shouldProxy('/status/sessions', {}, flex)).toBe(false);
 	});
 
 	it('proxies play queues Flex does not hold', () => {

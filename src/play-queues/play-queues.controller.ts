@@ -16,6 +16,7 @@ import { User } from '../utils/user.decorator.js';
 import { AppService } from '../app.service.js';
 import util from 'util';
 import { LoggedInGuard } from '../middleware/logged-in.guard.js';
+import { rememberPlaybackUser } from '../status/playback-sessions.js';
 
 //Clients send the playback session id under different names, either as a header or as a query param
 const SESSION_ID_NAMES = ['x-plex-playback-session-id', 'x-plex-session-identifier', 'x-plex-session-id'];
@@ -175,6 +176,7 @@ export class PlayQueuesController {
 		@User() user: MyPlexUser,
 	) {
 		const playbackSessionId = playbackSessionIdOf(headers, query);
+		rememberPlaybackUser(playbackSessionId, user);
 
 		const playQueue = playbackSessionId ? await this.playQueuesService.getPlayQueueByPlaybackSession(playbackSessionId) : undefined;
 

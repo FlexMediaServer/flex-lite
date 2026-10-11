@@ -10,6 +10,10 @@ Flex makes no attempt to grant Plex Pass features for free - it is not a way to 
 
 Please note that this is currently in **beta**. I use it for my own Plex setup and actively update it, but things may occasionally break or behave unexpectedly. Please keep this in mind when using it.
 
+## Community
+
+Questions, bug reports, or help getting set up? Join the Discord: https://discord.gg/a6VQsMrVQF
+
 ## Docker Compose Setup
 
 Here's how to get Flex up and running.

@@ -23,7 +23,7 @@ const FLEX_ROUTES = [
 ];
 
 //Flex serves only these exact paths. Anything beneath them (eg. /media/providers/metadata) is Plex's.
-const FLEX_EXACT_ROUTES = ['/media/providers'];
+const FLEX_EXACT_ROUTES = ['/media/providers', '/status/sessions'];
 
 //The hub paths Flex serves. Other /hubs paths (eg. /hubs/sections/4/manage) are Plex's.
 const FLEX_HUB_ROUTE = /^\/hubs(?:\/(?:promoted|search|continueWatching|sections\/[^/]+|[^/]+\/items|metadata\/[^/]+\/related))?$/;
