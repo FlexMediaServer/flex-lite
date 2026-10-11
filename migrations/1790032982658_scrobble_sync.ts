@@ -20,7 +20,7 @@ export async function up(db: Kysely<any>): Promise<void> {
 
 		await trx.schema
 			.createIndex('scrobble_sync_idx')
-			.on('progress')
+			.on('scrobble_sync')
 			.columns(['account_id', 'viewed_at', 'cursor', 'updated_at'])
 			.execute();
 	})
