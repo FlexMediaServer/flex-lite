@@ -4,8 +4,10 @@ const TTL_MS = 24 * 3600 * 1000;
 const PRUNE_EVERY_MS = 60 * 1000;
 
 //Kept here rather than in the shared cache: Keyv only drops an expired entry when that key is read again,
-//so a session that is never read again would stay in memory. This map is pruned as it grows.
+//so a session that is never read again would stay in memory. These maps are pruned as they grow.
 const sessions = new Map<string, { user: PlaybackUser; expiresAt: number }>();
+//Items already counted as watched in a playback, keyed by playback session and item guid
+const watched = new Map<string, number>();
 let prunedAt = 0;
 
 function prune(now: number) {
@@ -14,6 +16,9 @@ function prune(now: number) {
 	prunedAt = now;
 	for (const [playbackSessionId, session] of sessions) {
 		if (session.expiresAt <= now) sessions.delete(playbackSessionId);
+	}
+	for (const [key, expiresAt] of watched) {
+		if (expiresAt <= now) watched.delete(key);
 	}
 }
 
@@ -43,4 +48,20 @@ export function playbackUserOf(playbackSessionId: string | undefined): PlaybackU
 	}
 
 	return session.user;
+}
+
+//True once an item has been counted as watched in this playback
+export function playbackWatched(playbackSessionId: string, guid: string): boolean {
+	return (watched.get(`${playbackSessionId}:${guid}`) ?? 0) > Date.now();
+}
+
+//Marks an item as watched in this playback. Returns false when it already was, so it is only counted once.
+export function claimPlaybackWatched(playbackSessionId: string, guid: string): boolean {
+	const now = Date.now();
+	prune(now);
+
+	if (playbackWatched(playbackSessionId, guid)) return false;
+
+	watched.set(`${playbackSessionId}:${guid}`, now + TTL_MS);
+	return true;
 }

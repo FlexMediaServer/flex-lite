@@ -3,6 +3,7 @@ import { Metadata } from '../dto/Metadata.entity.js';
 import { $Fetch, ofetch } from 'ofetch';
 import { normalizeParams } from '../utils/request-values.js';
 import { getMediaNotFoundUrl } from '../utils/media-not-found.js';
+import { DEFAULT_PLAYED_THRESHOLD, playedThresholdFrom } from './played-threshold.js';
 import path from 'path';
 import { readFile } from 'node:fs/promises';
 import { db } from '../utils/database.js';
@@ -224,6 +225,24 @@ export class PMSService implements OnModuleInit {
 			.execute();
 
 		return this.getNotFoundItem();
+	}
+
+	//The server's played threshold, as a fraction of an item. Read from the server's prefs and cached for an hour.
+	private playedThresholdCache?: { value: number; fetchedAt: number };
+
+	async playedThreshold(): Promise<number> {
+		if (this.playedThresholdCache && Date.now() - this.playedThresholdCache.fetchedAt < 3600 * 1000) return this.playedThresholdCache.value;
+
+		try {
+			const response = await this.plexServerApi('/:/prefs');
+			const value = playedThresholdFrom(response?.MediaContainer?.Setting);
+			this.playedThresholdCache = { value, fetchedAt: Date.now() };
+			return value;
+		} catch (error: any) {
+			//Not cached, so the next playback tries the server again
+			console.error(`Could not read the played threshold: ${error?.message ?? error}`);
+			return DEFAULT_PLAYED_THRESHOLD;
+		}
 	}
 
 	//True when the item is being served the shared not found copy rather than its own media. Compared by Plex id, not url, so mappings made before a url change are still recognised.

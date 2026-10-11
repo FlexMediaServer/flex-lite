@@ -6,6 +6,8 @@ import { PMSService } from '../plex/plex.service.js';
 import { decryptPlexToken } from '../utils/crypto.js';
 import { db } from '../utils/database.js';
 import { Metadata } from '../dto/Metadata.entity.js';
+import { claimPlaybackWatched, playbackWatched } from '../status/playback-sessions.js';
+import { reachedPlayedThreshold } from '../plex/played-threshold.js';
 import { MetadataService } from '../metadata/metadata.service.js';
 import type { MetadataService as MetadataServiceType } from '../metadata/metadata.service.js';
 
@@ -52,7 +54,10 @@ export class ScrobblingService implements OnApplicationBootstrap {
 		// void this.syncAllUsers();
 	}
 
-	async scrobble(item: Metadata, user: MyPlexUser) {
+	//A playback counts an item once, whether the client scrobbles it or Flex reaches the played threshold
+	async scrobble(item: Metadata, user: MyPlexUser, playbackSessionId?: string) {
+		if (playbackSessionId && item.guid && !claimPlaybackWatched(playbackSessionId, item.guid)) return;
+
 		await this.updateState(item, user, { type: 'scrobble' })
 	}
 
@@ -60,7 +65,16 @@ export class ScrobblingService implements OnApplicationBootstrap {
 		await this.updateState(item, user, { type: 'unscrobble' })
 	}
 
-	async timeline(item: Metadata, user: MyPlexUser, viewOffset: number) {
+	//Once the played threshold is reached the item is scrobbled, and the playback's offset is no longer tracked
+	async timeline(item: Metadata, user: MyPlexUser, viewOffset: number, playbackSessionId?: string) {
+		const guid = item.guid;
+		if (playbackSessionId && guid && playbackWatched(playbackSessionId, guid)) return;
+
+		if (playbackSessionId && guid && reachedPlayedThreshold(viewOffset, item.duration, await this.pmsService.playedThreshold())) {
+			await this.scrobble(item, user, playbackSessionId);
+			return;
+		}
+
 		await this.updateState(item, user, { type: 'timeline', viewOffset })
 	}
 

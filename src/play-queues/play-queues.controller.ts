@@ -215,7 +215,7 @@ export class PlayQueuesController {
 
 		const viewOffset = parseInt(query.time);
 		if (!isNaN(viewOffset) && ['playing', 'paused'].includes(query.state)) {
-			await this.scrobblingService.timeline(item, user, viewOffset);
+			await this.scrobblingService.timeline(item, user, viewOffset, playbackSessionId);
 		}
 
 		return res;
@@ -247,7 +247,7 @@ export class PlayQueuesController {
 		const item = await this.metadataService.getItem(query.key);
 		if (!item) throw new NotFoundException();
 
-		if (scrobble) void this.scrobblingService.scrobble(item, user);
+		if (scrobble) void this.scrobblingService.scrobble(item, user, playbackSessionIdOf(headers, query));
 		else void this.scrobblingService.unscrobble(item, user);
 	}
 

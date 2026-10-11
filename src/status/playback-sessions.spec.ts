@@ -61,4 +61,17 @@ describe('playback sessions', () => {
 		expect(store.trackedSessionCount()).toBe(2);
 		expect(store.playbackUserOf('session-g')).toEqual({ id: 9, title: 'Lee', thumb: undefined });
 	});
+
+	it('counts an item as watched once per playback', () => {
+		expect(store.playbackWatched('session-h', 'guid-1')).toBe(false);
+		expect(store.claimPlaybackWatched('session-h', 'guid-1')).toBe(true);
+		expect(store.claimPlaybackWatched('session-h', 'guid-1')).toBe(false);
+		expect(store.playbackWatched('session-h', 'guid-1')).toBe(true);
+	});
+
+	it('counts the same item again in a new playback', () => {
+		store.claimPlaybackWatched('session-i', 'guid-1');
+
+		expect(store.claimPlaybackWatched('session-j', 'guid-1')).toBe(true);
+	});
 });
