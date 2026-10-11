@@ -325,7 +325,7 @@ export class MetadataController {
 	async metadata(@User() user: MyPlexUser, @Headers() headers: any, @Query() query: any, @Param() params: any, @IsXML() isXML: boolean, @Client() clientType: ClientType) {
 		if (params.id.includes(',')) return this.metadataList(params.id.split(','), headers, user, isXML);
 
-		let metadata = await this.metadataService.getItem(params.id);
+		let metadata = await this.metadataService.getItem(params.id, true);
 		if (!metadata) throw new NotFoundException();
 
 		//Forces stream resolution. This fixes an issue that prevents playback from starting when going to next item in play queue. Currently only targets web and roku, however some other clients may need this enabled as well.
