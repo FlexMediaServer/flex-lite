@@ -262,8 +262,9 @@ export class PlayQueuesController {
 		const itemId = query.path.split('/').pop()
 		let item = await this.metadataService.getItem(itemId)
 		if (!item) throw new NotFoundException()
-		let localItem = (await this.pmsService.resolveLocalItem([item]))[0];
-		if (!localItem || localItem.Media?.[0] === undefined) throw new NotFoundException()
+
+		const localItem = await this.appService.resolveMedia(item);
+		if (!localItem) throw new NotFoundException()
 
 		query.path = localItem.key
 		if (query.videoResolution === '') query.videoResolution = '1080x1080'
@@ -280,7 +281,7 @@ export class PlayQueuesController {
 			headers
 		});
 
-		const Media = {...decision.MediaContainer?.Metadata?.[0]?.Media?.[0]}
+		const Media = localItem.Media?.[0] ? {...localItem.Media[0]} : (emptyMedia() as any);
 
 		if (decision.MediaContainer) {
 			decision.MediaContainer.Metadata = undefined;
