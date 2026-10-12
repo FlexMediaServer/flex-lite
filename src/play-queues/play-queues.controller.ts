@@ -280,7 +280,7 @@ export class PlayQueuesController {
 			headers
 		});
 
-		const Media = {...decision.MediaContainer?.Metadata[0].Media[0]}
+		const Media = {...decision.MediaContainer?.Metadata?.[0]?.Media?.[0]}
 
 		if (decision.MediaContainer) {
 			decision.MediaContainer.Metadata = undefined;
