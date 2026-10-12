@@ -25,6 +25,7 @@ export interface DB_Metadata {
 	imdb_id: Generated<string | null>;
 	tmdb_id: Generated<string | null>;
 	tvdb_id: Generated<string | null>;
+	type: Generated<string>;
 	updated_at: Generated<number | null>;
 }
 

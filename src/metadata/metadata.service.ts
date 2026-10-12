@@ -423,20 +423,21 @@ export class MetadataService {
 
 			const hits = resolved.filter((item): item is Metadata => item !== null);
 
-			hubs.push(
-				new Hub({
-					style: 'shelf',
-					promoted: true,
-					hubIdentifier: `stremio.${catalog.type}.${catalog.id}`,
-					hubKey: `/library/metadata/${hits.map((metadata) => metadata.ratingKey).join(',')}`,
-					key: `/hubs/stremio.${catalog.type}.${catalog.id}/items`,
-					context: `hub.stremio.${catalog.type}.${catalog.id}`,
-					more: false,
-					title: `${catalog.name} - ${catalog.type === 'movie' ? 'Movies' : 'Shows'}`,
-					type: catalog.type === 'movie' ? 'movie' : catalog.type === 'series' ? 'show' : 'mixed',
-					Metadata: hits.length > 0 ? hits : undefined,
-				}),
-			);
+			const hub = new Hub({
+				style: 'shelf',
+				promoted: true,
+				hubIdentifier: `stremio.${catalog.type}.${catalog.id}`,
+				hubKey: `/library/metadata/${hits.map((metadata) => metadata.ratingKey).join(',')}`,
+				key: `/hubs/stremio.${catalog.type}.${catalog.id}/items`,
+				context: `hub.stremio.${catalog.type}.${catalog.id}`,
+				more: false,
+				title: `${catalog.name} - ${catalog.type === 'movie' ? 'Movies' : 'Shows'}`,
+				type: catalog.type === 'movie' ? 'movie' : catalog.type === 'series' ? 'show' : 'mixed',
+				Metadata: hits.length > 0 ? hits : undefined,
+			});
+
+			hubs.push(hub);
+			if (this.hubs.length <= 0) this.hubs = hubs;
 		}
 
 		this.hubs = hubs;
@@ -451,21 +452,28 @@ export class MetadataService {
 		const imdbId = stremioMeta.imdb_id || (stremioMeta.id?.startsWith('tt') ? stremioMeta.id : null);
 		const tmdbId = stremioMeta.moviedb_id ? String(stremioMeta.moviedb_id) : null;
 
-		let cachedMatch = null;
+		//The metadata table holds movies, shows and episodes together, so a cached row only counts if it is the same type
+		const expectedType = isMovie ? 'movie' : 'show';
+
+		let cachedMatch: Metadata | undefined;
 
 		if (imdbId || tmdbId) {
-			cachedMatch = await db
+			const row = await db
 				.selectFrom('metadata')
-				.selectAll()
-				.where((eb) => eb.or([eb('imdb_id', '=', imdbId), eb('tmdb_id', '=', tmdbId)]))
+				.select(['data'])
+				.where((eb) => eb.and([
+					eb.or([eb('imdb_id', '=', imdbId), eb('tmdb_id', '=', tmdbId)]),
+					eb('type', '=', expectedType),
+				]))
 				.orderBy('updated_at', 'desc')
 				.executeTakeFirst();
+
+			if (row) {
+				cachedMatch = (typeof row.data === 'string' ? JSON.parse(row.data) : row.data) as Metadata;
+			}
 		}
 
-		if (cachedMatch?.data) {
-			const cachedData = typeof cachedMatch.data === 'string' ? JSON.parse(cachedMatch.data) : cachedMatch.data;
-			return new Metadata(cachedData);
-		}
+		if (cachedMatch) return new Metadata(cachedMatch);
 
 		const body: Record<string, string | number> = isMovie
 			? {
@@ -504,24 +512,27 @@ export class MetadataService {
 		if (imdbId) knownIds.add(`imdb://${imdbId}`);
 		if (tmdbId) knownIds.add(`tmdb://${tmdbId}`);
 
-		const match = candidates.find((candidate) => candidate.Guid?.some((g) => knownIds.has(g.id)));
+		const match = candidates.find((candidate) => candidate.type === expectedType && candidate.Guid?.some((g) => knownIds.has(g.id)));
 
 		if (!match?.guid) return null;
 
 		const plexId = match.guid.split('/').pop();
 		if (!plexId) return null;
 		const item = await this.getItem(plexId);
-		if (!item) return null;
+		//The stored row for this ID can hold a different item, so the type is checked again on what comes back
+		if (!item || item.type !== expectedType) return null;
 
-		const imdbGuid = match.Guid?.find((g) => g.id.startsWith('imdb://'))?.id?.replace('imdb://', '') || imdbId;
-		const tmdbGuid = match.Guid?.find((g) => g.id.startsWith('tmdb://'))?.id?.replace('tmdb://', '') || tmdbId;
-		const tvdbGuid = match.Guid?.find((g) => g.id.startsWith('tvdb://'))?.id?.replace('tvdb://', '');
+		//Only IDs the Plex match returns, and the fetched item also carries, are stored. Nothing comes from the Stremio meta
+		const verifiedId = (prefix: string) => {
+			const id = match.Guid?.find((g) => g.id.startsWith(prefix))?.id;
+			return id && item.Guid?.some((g) => g.id === id) ? id.replace(prefix, '') : null;
+		};
 
 		await this.upsertMetadataEntry({
 			id: plexId,
-			imdbId: imdbGuid ?? null,
-			tmdbId: tmdbGuid ?? null,
-			tvdbId: tvdbGuid ?? null,
+			imdbId: verifiedId('imdb://'),
+			tmdbId: verifiedId('tmdb://'),
+			tvdbId: verifiedId('tvdb://'),
 			data: item,
 		});
 
@@ -539,32 +550,22 @@ export class MetadataService {
 		const { id, imdbId = null, tmdbId = null, tvdbId = null, data } = params;
 		const now = Math.floor(Date.now() / 1000);
 		const dataPayload = isSqlite ? JSON.stringify(data) : data;
+		const itemType = (data as any)?.type ?? 'mixed';
 
-		const existing = await db
-			.selectFrom('metadata')
-			.selectAll()
-			.where((eb) =>
-				eb.or([
-					eb('id', '=', id),
-					...(imdbId ? [eb('imdb_id', '=', imdbId)] : []),
-					...(tmdbId ? [eb('tmdb_id', '=', tmdbId)] : []),
-					...(tvdbId ? [eb('tvdb_id', '=', tvdbId)] : []),
-				]),
-			)
-			.orderBy('updated_at', 'desc')
-			.executeTakeFirst();
+		const existing = await db.selectFrom('metadata').select('id').where('id', '=', id).executeTakeFirst();
 
 		if (existing) {
 			await db
 				.updateTable('metadata')
 				.set({
-					imdb_id: imdbId ?? existing.imdb_id,
-					tmdb_id: tmdbId ?? existing.tmdb_id,
-					tvdb_id: tvdbId ?? existing.tvdb_id,
+					imdb_id: imdbId,
+					tmdb_id: tmdbId,
+					tvdb_id: tvdbId,
+					type: itemType,
 					data: dataPayload,
 					updated_at: now,
 				})
-				.where('id', '=', existing.id)
+				.where('id', '=', id)
 				.execute();
 		} else {
 			await db
@@ -574,6 +575,7 @@ export class MetadataService {
 					imdb_id: imdbId,
 					tmdb_id: tmdbId,
 					tvdb_id: tvdbId,
+					type: itemType,
 					data: dataPayload,
 					created_at: now,
 					updated_at: now,
