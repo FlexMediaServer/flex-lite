@@ -1,4 +1,4 @@
-import { Controller, Get, NotFoundException, Param, Query, Req, UseGuards, Headers, BadRequestException, Put } from '@nestjs/common';
+import { Controller, Get, NotFoundException, Param, Query, Req, UseGuards, Headers, BadRequestException, Put, Delete } from '@nestjs/common';
 import type { Request } from 'express';
 import { MediaContainer } from '../dto/MediaContainer.entity.js';
 import { IsXML } from '../is-xml.decorator.js';
@@ -551,5 +551,31 @@ export class MetadataController {
 		} catch {
 			throw new NotFoundException();
 		}
+	}
+
+	@Delete('/library/metadata/:id/media/:mediaId')
+	async deleteMedia(@Param() params: { id: string; mediaId: string }, @Headers() headers: any) {
+		const itemId = params.id;
+
+		// Proxy local item deletion to Plex
+		if (isLocalId(itemId)) {
+			return await this.pmsService.plexUserApi(tokenOf(headers))(`/library/metadata/${itemId}/media/${params.mediaId}`, {
+				method: 'DELETE'
+			});
+		}
+
+		// Handle virtual item deletion
+		const item = await this.metadataService.getItem(itemId);
+		if (!item) throw new NotFoundException();
+
+		try {
+			await this.metadataService.deleteMedia(item);
+		} catch (error: any) {
+			throw new NotFoundException(error?.message ?? 'Failed to delete media');
+		}
+
+		return {
+			MediaContainer: new MediaContainer({})
+		};
 	}
 }

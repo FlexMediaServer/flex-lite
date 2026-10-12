@@ -396,6 +396,10 @@ export class MetadataService {
 			.execute();
 	}
 
+	async deleteMedia(item: Metadata): Promise<void> {
+		await this.pmsService.removeMapping(item);
+	}
+
 	@Cron(CronExpression.EVERY_12_HOURS)
 	async syncStremioCatalogs(): Promise<void> {
 		const manifest = this.stremioService.getManifest();
