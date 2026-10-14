@@ -121,9 +121,6 @@ export class StremioService implements OnModuleInit {
 	}
 
 	private async fetchAvailableStreams(id: string, type: StremioContentType = 'movie', refresh = false) {
-		// return [];
-		let cachedStreams = refresh ? undefined : await cache.get(`streams:${id}`);
-		if (cachedStreams) return cachedStreams;
 		if (!this.addonBaseUrl) {
 			return null;
 		}
@@ -131,8 +128,6 @@ export class StremioService implements OnModuleInit {
 		const url = `${this.addonBaseUrl}/stream/${type}/${id}.json`;
 		console.debug(`Fetching streams: ${url}`);
 		let streams = (await ofetch<StremioStreamResponse>(url))?.streams;
-		//Empty results are not cached, so a retry can still find streams the addon has added since
-		if (streams?.length) await cache.set(`streams:${id}`, streams, 60 * 60 * 1000);
 		return streams;
 	}
 

@@ -553,13 +553,16 @@ export class MetadataController {
 		}
 	}
 
-	@Delete('/library/metadata/:id/media/:mediaId')
-	async deleteMedia(@Param() params: { id: string; mediaId: string }, @Headers() headers: any) {
+	@Delete(['/library/metadata/:id/media/:mediaId', '/library/metadata/:id'])
+	async deleteMedia(@Param() params: { id: string; mediaId?: string }, @Headers() headers: any) {
 		const itemId = params.id;
 
 		// Proxy local item deletion to Plex
 		if (isLocalId(itemId)) {
-			return await this.pmsService.plexUserApi(tokenOf(headers))(`/library/metadata/${itemId}/media/${params.mediaId}`, {
+			const path = params.mediaId
+				? `/library/metadata/${itemId}/media/${params.mediaId}`
+				: `/library/metadata/${itemId}`;
+			return await this.pmsService.plexUserApi(tokenOf(headers))(path, {
 				method: 'DELETE'
 			});
 		}
