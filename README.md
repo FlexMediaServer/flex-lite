@@ -38,7 +38,7 @@ services:
         image: ghcr.io/flexmediaserver/flex-lite:latest
         restart: unless-stopped
         environment:
-            CLAIM_TOKEN: <claim token>
+            PLEX_CLAIM: <claim token>
             STREMIO_ADDON: https://aiostreams.example.com/stremio/<your-token>/manifest.json
         volumes:
             - ./flex:/config
@@ -50,7 +50,7 @@ Environment variables supported by Flex:
 
 | Variable | Description |
 | -------- | ----------- |
-| `CLAIM_TOKEN` | Plex claim token from https://www.plex.tv/claim |
+| `PLEX_CLAIM` | Plex claim token from https://www.plex.tv/claim |
 | `STREMIO_ADDON` | Full Stremio addon manifest URL (required). e.g. `https://aiostreams.example.com/stremio/<token>/manifest.json` |
 | `MEDIA_NOT_FOUND_VIDEO` | URL of the video played when no media can be resolved. Defaults to `http://localhost:<FLEX_PORT>/assets/MediaNotFound.mp4`, which points at the Flex server in the unified container. Set it only if Plex must reach Flex at a different address. Every such item shares one copy of the video, and playing it never records progress for the item |
 | `PLEX_SERVICE_TOKEN_SEED` | Seed for reading Plex scrobble tokens |
