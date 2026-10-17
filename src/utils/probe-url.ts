@@ -1,7 +1,7 @@
 import { ofetch } from 'ofetch';
 
 //Returns true when a GET request to the URL succeeds with a 2xx or 206 status within the timeout.
-export async function probeUrl (url: string, timeoutMs: number = 5000): Promise<boolean> {
+export async function probeUrl (url: string, timeoutMs: number = 30000): Promise<boolean> {
 	try {
 		const response = await ofetch.raw(url, {
 			method: 'GET',
