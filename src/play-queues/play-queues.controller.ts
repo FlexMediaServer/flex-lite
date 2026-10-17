@@ -269,6 +269,7 @@ export class PlayQueuesController {
 		query.path = localItem.key
 		if (query.videoResolution === '') query.videoResolution = '1080x1080'
 		if (query['X-Plex-Device'] === '') delete query['X-Plex-Device']
+		if (query['X-Plex-Restriction-Profile'] === '') delete query['X-Plex-Restriction-Profile']
 
 		delete query['X-Plex-Token'];
 		delete headers['x-plex-token'];
@@ -316,6 +317,7 @@ export class PlayQueuesController {
 		delete headers['x-plex-token'];
 		delete headers['X-Plex-Token'];
 		if (query['X-Plex-Device'] === '') delete query['X-Plex-Device']
+		if (query['X-Plex-Restriction-Profile'] === '') delete query['X-Plex-Restriction-Profile']
 
 		//This req can be called by some clients (eg. Tizen devices) without a path query param and just an existing session ID.
 		if (query.path) {
@@ -366,6 +368,7 @@ export class PlayQueuesController {
 	@Get('/library/parts/{*path}')
 	async getPart (@Req() req: any, @Res({ passthrough: true }) res: any, @Query() query: any, @Headers() headers: any) {
 		if (query['X-Plex-Device'] === '') delete query['X-Plex-Device']
+		if (query['X-Plex-Restriction-Profile'] === '') delete query['X-Plex-Restriction-Profile']
 
 		delete query['X-Plex-Token'];
 		delete headers['x-plex-token'];
