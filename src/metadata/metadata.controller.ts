@@ -545,7 +545,7 @@ export class MetadataController {
 				},
 			});
 
-			await cache.set(req.path, result);
+			await cache.set(req.path, result, 3600 * 1000);
 
 			return result;
 		} catch {

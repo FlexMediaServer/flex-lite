@@ -2,6 +2,7 @@ import { Injectable, OnModuleInit } from '@nestjs/common';
 import { Metadata } from '../dto/Metadata.entity.js';
 import { $Fetch, ofetch } from 'ofetch';
 import { normalizeParams } from '../utils/request-values.js';
+import { cancelUnreadBody } from '../utils/upstream-stream.js';
 import { getMediaNotFoundUrl } from '../utils/media-not-found.js';
 import { DEFAULT_PLAYED_THRESHOLD, playedThresholdFrom } from './played-threshold.js';
 import path from 'path';
@@ -35,6 +36,7 @@ export class PMSService implements OnModuleInit {
 
 			options.headers.set('x-plex-token', this.plexToken)
 		},
+		onResponseError: cancelUnreadBody,
 	});
 
 	constructor() {}

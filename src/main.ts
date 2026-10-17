@@ -2,7 +2,7 @@ import dotenv from 'dotenv';
 import { NestFactory } from '@nestjs/core';
 import { WsAdapter } from '@nestjs/platform-ws';
 import { AppModule, ObserveInstrument } from './app.module.js';
-import { createProxyMiddleware, fixRequestBody, responseInterceptor } from 'http-proxy-middleware';
+import { createProxyMiddleware, fixRequestBody } from 'http-proxy-middleware';
 import { FormatInterceptor } from './format.interceptor.js';
 import { SectionsService } from './plex/sections.service.js';
 import { PlayQueuesService } from './play-queues/play-queues.service.js';
@@ -27,7 +27,12 @@ console.info = (...properties) => {
 async function bootstrap() {
 	const app = await NestFactory.create(AppModule, {
 		instrument: ObserveInstrument,
+		//Playback streams and notification sockets stay open for hours, so shutdown closes them rather than waiting
+		forceCloseConnections: true,
 	});
+
+	//Runs the shutdown hooks on SIGTERM/SIGINT, which close the database once the server has stopped
+	app.enableShutdownHooks();
 
 
 	// Define your target backend or microservice URL
@@ -78,15 +83,14 @@ async function bootstrap() {
 			changeOrigin: true, // Rewrites the host header to match the target
 			secure: true,       // Set to false if target uses self-signed SSL certs
 			pathFilter: pathFilter,
-			selfHandleResponse: true, // res.end() will be called internally by responseInterceptor()
 			on: {
 				// Essential hook to fix hanging POST/PUT requests caused by body-parsers
 				proxyReq: fixRequestBody,
-				proxyRes: responseInterceptor(async (responseBuffer, proxyRes: any, req, res) => {
-					const exchange = `[DEBUG] ${req.method} ${req.path} -> ${proxyRes.req.protocol}//${proxyRes.req.host}${proxyRes.req.path} [${proxyRes.statusCode}]`;
-					console.debug(exchange); // [DEBUG] GET / -> http://www.example.com [200]
-					return responseBuffer; // manipulate response and return the result
-				}),
+				// Only logs, so the response streams through. responseInterceptor() would hold the whole body in memory,
+				// which for transcodes and long lived streams like /:/eventsource/notifications grows until the request ends.
+				proxyRes: (proxyRes: any, req: any) => {
+					console.debug(`${req.method} ${req.path} -> ${proxyRes.req.protocol}//${proxyRes.req.host}${proxyRes.req.path} [${proxyRes.statusCode}]`);
+				},
 			},
 		}),
 	);
