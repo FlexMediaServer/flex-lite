@@ -24,4 +24,28 @@ export const db = new Kysely<DB>({
 	dialect,
 });
 
-export const cache = new Keyv();
+//Keyv only drops an expired entry when that key is read again, so a plain Map grows with every key ever cached.
+//This store evicts the least recently used entry once it is full.
+class BoundedMap<K, V> extends Map<K, V> {
+	constructor(private readonly maxSize: number) {
+		super();
+	}
+
+	get(key: K): V | undefined {
+		if (!super.has(key)) return undefined;
+
+		const value = super.get(key) as V;
+		super.delete(key);
+		super.set(key, value);
+		return value;
+	}
+
+	set(key: K, value: V): this {
+		super.delete(key);
+		super.set(key, value);
+		if (this.size > this.maxSize) super.delete(this.keys().next().value as K);
+		return this;
+	}
+}
+
+export const cache = new Keyv({ store: new BoundedMap(1000) });

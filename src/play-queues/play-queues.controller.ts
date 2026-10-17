@@ -1,4 +1,4 @@
-import { Post, Query, Headers, Res, NotFoundException, Controller, Get, Param, InternalServerErrorException, Put, Delete, Req, StreamableFile, Header, UseGuards } from '@nestjs/common';
+import { Post, Query, Headers, Res, NotFoundException, Controller, Get, Param, InternalServerErrorException, Put, Delete, Req, Header, UseGuards } from '@nestjs/common';
 import { randomInt, randomUUID } from 'node:crypto';
 import { PlayQueuesQuery } from './play-queues.dto.js';
 import { parseKey } from '../utils/generic.js';
@@ -9,7 +9,7 @@ import { ScrobblingService } from '../scrobbling/scrobbling.service.js';
 import { PlayQueue, PlayQueuesService } from './play-queues.service.js';
 import { Metadata } from '../dto/Metadata.entity.js';
 import { emptyMedia, serializePlayQueues } from '../utils/plex.js';
-import { Readable } from 'node:stream';
+import { streamUpstream } from '../utils/upstream-stream.js';
 import { MediaContainer } from '../dto/MediaContainer.entity.js';
 import { IsXML } from '../is-xml.decorator.js';
 import { User } from '../utils/user.decorator.js';
@@ -332,41 +332,21 @@ export class PlayQueuesController {
 			if (query.videoResolution === '') query.videoResolution = '1080x1080'
 	}
 
-		if (req.path.includes('.mpd') || req.path.includes('.m3u8')) {
-			const arrayBuffer = await this.pmsService.plexServerApi(req.baseUrl + req.path, {
-				query,
-				headers,
-				responseType: 'arrayBuffer'
-			});
-
-			const buffer = Buffer.from(arrayBuffer);
-
-			return res.status(200).send(buffer);
-		}
-
-		// console.log(req.baseUrl + req.path, localItem?.key)
+		//Manifests (.mpd, .m3u8) and progressive transcodes (.mkv) are all streamed through
 		const response = await this.pmsService.plexServerApi.raw(req.baseUrl + req.path, {
 			query,
 			headers,
 			responseType: 'stream',
 		});
 
-		res.status(response.status);
-
-		const contentType = response.headers.get('content-type');
-		if (contentType) res.header('Content-Type', contentType);
-
-		const contentLength = response.headers.get('content-length');
-		if (contentLength) res.header('Content-Length', contentLength);
-
-		// Stream through with backpressure
-		const nodeStream = Readable.fromWeb(response._data as any);
-		req.on('close', () => nodeStream.destroy());
-		nodeStream.pipe(res);
+		streamUpstream(response, res, {
+			'Content-Type': response.headers.get('content-type') ?? undefined,
+			'Content-Length': response.headers.get('content-length') ?? undefined,
+		});
 	}
 
 	@Get('/library/parts/{*path}')
-	async getPart (@Req() req: any, @Res({ passthrough: true }) res: any, @Query() query: any, @Headers() headers: any) {
+	async getPart (@Req() req: any, @Res() res: any, @Query() query: any, @Headers() headers: any) {
 		if (query['X-Plex-Device'] === '') delete query['X-Plex-Device']
 		if (query['X-Plex-Restriction-Profile'] === '') delete query['X-Plex-Restriction-Profile']
 
@@ -381,25 +361,13 @@ export class PlayQueuesController {
 			responseType: 'stream'
 		})
 
-		res.status(response.status);
-
-		if (response.headers.get('content-range')) {
-			res.header('Content-Range', response.headers.get('content-range'));
-		}
-
-		res.header('Accept-Ranges', 'bytes')
-
-		//Extract headers from the response object
-		const contentType = response.headers.get('content-type') || 'application/octet-stream';
-		const contentDisposition = response.headers.get('content-disposition') || undefined;
-		const contentLength = response.headers.get('content-length');
-
-		const nodeStream = Readable.fromWeb(response._data as any);
-
-		return new StreamableFile(nodeStream, {
-			length: contentLength !== null ? parseInt(contentLength) : undefined,
-			type: contentType,
-			disposition: contentDisposition
+		//Direct play: StreamableFile is piped with pipe(), which leaves the Plex request open whenever the client seeks
+		streamUpstream(response, res, {
+			'Accept-Ranges': 'bytes',
+			'Content-Range': response.headers.get('content-range') ?? undefined,
+			'Content-Type': response.headers.get('content-type') || 'application/octet-stream',
+			'Content-Disposition': response.headers.get('content-disposition') ?? undefined,
+			'Content-Length': response.headers.get('content-length') ?? undefined,
 		});
 	}
 

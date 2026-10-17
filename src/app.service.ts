@@ -1,11 +1,12 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable, OnApplicationShutdown, OnModuleInit } from '@nestjs/common';
 import { Metadata } from './dto/Metadata.entity.js';
 import { StremioService } from './stremio/stremio.service.js';
 import { PMSService } from './plex/plex.service.js';
 import { probeUrl } from './utils/probe-url.js';
+import { db } from './utils/database.js';
 
 @Injectable()
-export class AppService implements OnModuleInit {
+export class AppService implements OnModuleInit, OnApplicationShutdown {
 
 	private readonly tasks = new Map<string, Promise<Metadata | null>>();
 
@@ -15,6 +16,11 @@ export class AppService implements OnModuleInit {
 	) {}
 
 	async onModuleInit () {}
+
+	//Called after the HTTP server has closed, so no request is still using the database
+	async onApplicationShutdown () {
+		await db.destroy();
+	}
 
 	//Resolves the Plex metadata to play for an item: its own local copy, the shared not found copy, or a newly ingested stream.
 	resolveMedia (item: Metadata): Promise<Metadata | null> {
