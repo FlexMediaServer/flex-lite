@@ -14,7 +14,7 @@ The `playQueues` API endpoint manages playback queueing for upcoming items. Firs
 ### Playback Flow
 When playback starts, the `playQueues` request is held open until the current item is ready on the Plex server:
 
-1. **Local check**: If Plex still has the item, Flex reuses it. For items ingested through Flex, the stored stream URL must also still respond to a HEAD probe. If it does not, the mapping is removed and the flow continues below.
+1. **Local check**: If Plex still has the item, Flex reuses it. For items ingested through Flex, the stored stream URL must also still respond to a probe. If it does not, the mapping is removed and the flow continues below.
 2. **Stream resolution**: Flex requests the item's streams from the Stremio addon and probes each URL in order. The first one that responds is used. If none respond, the not found placeholder is used: one shared Plex copy of `MEDIA_NOT_FOUND_VIDEO`, ingested once and never matched to a metadata item. Each item maps to that copy, and playback of it records no progress or timeline for the item.
 3. **Ingestion via `POST /library/file`**: Flex calls the Plex server's `POST /library/file` endpoint with the stream URL as the `url` query parameter (`ingestNonMatches=1`, `computeHashes=0`). Plex ingests the URL directly and returns the new library item.
 4. **Mapping**: The Plex guid, the new Plex item ID, and the stream URL are stored in `item_mappings`. Later requests for the same item reuse it, and concurrent requests for the same item share a single ingest.
