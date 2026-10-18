@@ -310,6 +310,7 @@ export class PlayQueuesController {
 		'/video/:id/transcode/universal/start.m3u8',
 		'/video/:id/transcode/universal/start.mkv',
 		'/video/:id/transcode/universal/start',
+		'/video/:id/transcode/universal/subtitles',
 	])
 	async start(@Req() req: any, @Res() res: any, @Query() query: any, @Headers() headers: any) {
 
@@ -332,7 +333,7 @@ export class PlayQueuesController {
 			if (query.videoResolution === '') query.videoResolution = '1080x1080'
 	}
 
-		//Manifests (.mpd, .m3u8) and progressive transcodes (.mkv) are all streamed through
+		//Manifests (.mpd, .m3u8), progressive transcodes (.mkv) and subtitle-only transcodes are all streamed through
 		const response = await this.pmsService.plexServerApi.raw(req.baseUrl + req.path, {
 			query,
 			headers,

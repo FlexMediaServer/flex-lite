@@ -113,7 +113,7 @@ export class FormatInterceptor<T> implements NestInterceptor<T, Response<T>> {
 	intercept(context: ExecutionContext, next: CallHandler): Observable<Response<T>> {
 		const request = context.switchToHttp().getRequest() as Request;
 
-		if (request.path.startsWith('/video/:/transcode/universal/start')) return next.handle();
+		if (request.path.startsWith('/video/:/transcode/universal/start') || request.path.startsWith('/video/:/transcode/universal/subtitles')) return next.handle();
 
 		const accept = toRequestListString(request.query['accept'] || request.query['Accept'] || request.headers['accept'] || request.headers['Accept']);
 

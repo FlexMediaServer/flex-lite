@@ -16,6 +16,7 @@ const FLEX_ROUTES = [
 	'/:/unscrobble',
 	'/video/:/transcode/universal/decision',
 	'/video/:/transcode/universal/start',
+	'/video/:/transcode/universal/subtitles',
 	'/library/metadata',
 	'/playQueues',
 	'/dummy.mkv',
