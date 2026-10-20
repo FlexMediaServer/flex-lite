@@ -1,4 +1,4 @@
-FROM lscr.io/linuxserver/plex:1.43.4
+FROM lscr.io/linuxserver/plex:1.43.5
 
 RUN apt-get update && \
     apt-get install -y supervisor nodejs npm && \
