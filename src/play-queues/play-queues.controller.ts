@@ -340,7 +340,11 @@ export class PlayQueuesController {
 			responseType: 'stream',
 		});
 
-		streamUpstream(response, res, {
+		//Manifests are always passed through with a 200, whatever status Plex answered with
+		const isManifest = req.path.endsWith('.mpd') || req.path.endsWith('.m3u8');
+		const upstream = isManifest ? { status: 200, headers: response.headers, _data: response._data } : response;
+
+		streamUpstream(upstream, res, {
 			'Content-Type': response.headers.get('content-type') ?? undefined,
 			'Content-Length': response.headers.get('content-length') ?? undefined,
 		});
