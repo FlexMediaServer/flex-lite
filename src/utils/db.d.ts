@@ -33,7 +33,7 @@ export interface Progress {
 	id: Generated<number>;
 	account_id: number | null;
 	guid: string; //Plex GUID
-	parent_guid: string; //Plex GUID
+	parent_guid: string | null; //Plex GUID of the season, null for shows and movies
 	grandparent_guid: string | null; //Plex GUID
 	index: number | null;
 	parent_index: number | null;

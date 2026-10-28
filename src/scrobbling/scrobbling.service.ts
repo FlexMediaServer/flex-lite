@@ -31,6 +31,19 @@ function decodeJwtExpiry(token: string): number | undefined {
 	}
 }
 
+/** Episodes and movies are the only items with progress rows of their own. */
+const isLeaf = (item: Metadata) => item.type === 'episode' || item.type === 'movie';
+
+/** The distinct guids of the given items, skipping any without one. */
+const guidsOf = (items: Metadata[]) => [...new Set(items.map((item) => item.guid).filter((guid): guid is string => !!guid))];
+
+/** Splits a list into batches so one multi-row statement stays under the engine's parameter limit. */
+function chunked<T>(items: T[], size = 100): T[][] {
+	const batches: T[][] = [];
+	for (let i = 0; i < items.length; i += size) batches.push(items.slice(i, i + size));
+	return batches;
+}
+
 @Injectable()
 export class ScrobblingService implements OnApplicationBootstrap {
 	private readonly logger = new Logger(ScrobblingService.name);
@@ -82,100 +95,86 @@ export class ScrobblingService implements OnApplicationBootstrap {
 	 * Records playback state for an item in the local `progress` table, upserting on its
 	 * (`account_id`, `guid`) unique constraint.
 	 *
-	 * - `scrobble` increments `view_count` and stamps `last_viewed_at`, resetting `view_offset`
-	 *   since a scrobble only happens at the end of an item.
-	 * - `unscrobble` clears `view_count` and `last_viewed_at`.
-	 * - `timeline` stores the current `viewOffset` (milliseconds) and stamps `last_viewed_at`,
-	 *   leaving `view_count` alone on update and at `0` when the row does not exist yet.
+	 * Only episodes and movies have rows. A show or season is expanded to its episodes first, so
+	 * every episode carries its own state and a container's state is counted from them in `getState`.
 	 *
-	 * Scrobbling or unscrobbling a season additionally clears its episodes' override rows, so the
-	 * season's own state becomes the single source of truth for the cascade.
+	 * - `scrobble` marks the leaf watched and stamps `last_viewed_at`, resetting `view_offset` since
+	 *   a scrobble only happens at the end of an item. A single episode or movie adds one to
+	 *   `view_count`; a container only sets it to 1 where it is still unwatched, so a show-level
+	 *   scrobble doesn't inflate the counts of episodes already watched.
+	 * - `timeline` stores the current `viewOffset` (milliseconds) and stamps `last_viewed_at`, leaving
+	 *   `view_count` alone. It also clears a movie's `-1` hide marker, as any progress update does.
+	 * - `unscrobble` deletes the rows. An episode with no row is unwatched, so no empty rows are kept.
+	 *   Unscrobbling a show also deletes its own `-1` hide marker.
 	 *
-	 * Scrobbling or unscrobbling a show likewise clears every row beneath it, and unscrobbling a
-	 * show drops its own row too, leaving no record behind rather than an empty one. A season
-	 * keeps its own row, though: under a watched show it is the only thing able to mark just that
-	 * season unwatched again.
-	 *
-	 * The show/season identifiers are taken from the item so watched leaves stay attributable to
-	 * the right show (`grandparent_guid`) and season (`parent_index`) for `viewedLeafCount`.
+	 * The show's `-1` hide marker, written by `removeFromContinueWatching`, is the only row that is
+	 * neither an episode nor a movie.
 	 */
-	async updateState(
-		item: Metadata,
-		user: MyPlexUser,
-		update: { type: 'scrobble' } | { type: 'unscrobble' } | { type: 'timeline'; viewOffset: number } = { type: 'scrobble' },
-	): Promise<void> {
+	async updateState(item: Metadata, user: MyPlexUser, update: ProgressUpdate = { type: 'scrobble' }): Promise<void> {
 		const guid = item?.guid;
 		if (!user?.id || !guid) return;
+		const accountId = user.id;
 
 		//Items served the not found video are not really played, so their progress is never recorded
 		if (await this.pmsService.isNotFoundItem(item)) return;
 
+		//A timeline position only means something for the item actually playing, never for a container
+		if (update.type === 'timeline' && !isLeaf(item)) return;
+
+		const leaves = isLeaf(item) ? [item] : await this.metadataService.getLeaves(item);
+
+		if (update.type === 'unscrobble') {
+			await this.deleteRows(accountId, [...leaves.map((leaf) => leaf.guid), item.type === 'show' ? guid : undefined]);
+			return;
+		}
+
 		const now = Math.floor(Date.now() / 1000);
-		const isTimeline = update.type === 'timeline';
 		const scrobble = update.type === 'scrobble';
 
-		await db
-			.insertInto('progress')
-			.values({
-				account_id: user.id,
-				guid,
-				parent_guid: item.parentGuid ?? null,
-				grandparent_guid: item.grandparentGuid ?? null,
-				index: item.index ?? null,
-				parent_index: item.parentIndex ?? null,
-				view_count: isTimeline ? 0 : scrobble ? 1 : 0,
-				view_offset: isTimeline ? update.viewOffset : 0,
-				last_viewed_at: scrobble || isTimeline ? now : null,
+		const rows = leaves
+			.filter((leaf): leaf is Metadata & { guid: string } => !!leaf.guid)
+			.map((leaf) => ({
+				account_id: accountId,
+				guid: leaf.guid,
+				parent_guid: leaf.parentGuid ?? null,
+				grandparent_guid: leaf.grandparentGuid ?? null,
+				index: leaf.index ?? null,
+				parent_index: leaf.parentIndex ?? null,
+				view_count: scrobble ? 1 : 0,
+				view_offset: update.type === 'timeline' ? update.viewOffset : 0,
+				last_viewed_at: scrobble || update.type === 'timeline' ? now : null,
 				updated_at: now,
-			})
-			.onConflict((oc) =>
-				oc
-					.columns(['account_id', 'guid'])
-					.doUpdateSet({
-						grandparent_guid: item.grandparentGuid ?? null,
-						index: item.index ?? null,
-						parent_index: item.parentIndex ?? null,
-						...(isTimeline ? {} : { view_count: scrobble ? sql<number>`view_count + 1` : 0 }),
-						view_offset: isTimeline ? update.viewOffset : 0,
-						last_viewed_at: scrobble || isTimeline ? now : null,
-						updated_at: now,
-					}),
-			)
-			.execute();
+			}));
 
-		//Unscrobbling a show removes its own row too, so no progress record is left behind; a
-		//scrobble keeps it as the watched state the cascade flows from. Seasons never drop their
-		//own row: beneath a watched show it is the only thing that can keep a season unwatched.
-		const deleteOwnRow = update.type === 'unscrobble';
+		const viewCount = scrobble
+			? sql<number>`case when coalesce(view_count, 0) > 0 then view_count + ${isLeaf(item) ? 1 : 0} else 1 end`
+			: sql<number>`case when view_count = -1 then 0 else view_count end`;
 
-		if (item.type === 'show' && item.guid) {
-			const showGuid = item.guid;
-			//Season rows hang off the show via `parent_guid` (their `grandparent_guid` is null), so
-			//both levels are cleared and the show's own row becomes the single source of truth.
+		for (const batch of chunked(rows)) {
 			await db
-				.deleteFrom('progress')
-				.where('account_id', '=', user.id)
-				.where((eb) =>
-					eb.or([
-						eb('grandparent_guid', '=', showGuid),
-						eb('parent_guid', '=', showGuid),
-						...(deleteOwnRow ? [eb('guid', '=', showGuid)] : []),
-					]),
+				.insertInto('progress')
+				.values(batch)
+				.onConflict((oc) =>
+					oc.columns(['account_id', 'guid']).doUpdateSet((eb) => ({
+						parent_guid: eb.ref('excluded.parent_guid'),
+						grandparent_guid: eb.ref('excluded.grandparent_guid'),
+						index: eb.ref('excluded.index'),
+						parent_index: eb.ref('excluded.parent_index'),
+						view_count: viewCount,
+						view_offset: eb.ref('excluded.view_offset'),
+						last_viewed_at: eb.ref('excluded.last_viewed_at'),
+						updated_at: eb.ref('excluded.updated_at'),
+					})),
 				)
 				.execute();
 		}
+	}
 
-		//Marking a season watched/unwatched clears its episodes' rows (watched, override, -1 marker
-		//and timeline rows alike) so stale per-episode state can't block the season's own state.
-		if (item.type === 'season' && item.parentGuid && item.index !== undefined && item.index !== null) {
-			const showGuid = item.parentGuid;
-			const seasonIndex = item.index;
-			await db
-				.deleteFrom('progress')
-				.where('account_id', '=', user.id)
-				.where('grandparent_guid', '=', showGuid)
-				.where('parent_index', '=', seasonIndex)
-				.execute();
+	/** Deletes the progress rows for the given guids, ignoring any that are missing. */
+	private async deleteRows(accountId: number, guids: (string | undefined)[]): Promise<void> {
+		const ids = guids.filter((guid): guid is string => !!guid);
+		for (const batch of chunked(ids)) {
+			await db.deleteFrom('progress').where('account_id', '=', accountId).where('guid', 'in', batch).execute();
 		}
 	}
 
@@ -247,153 +246,79 @@ export class ScrobblingService implements OnApplicationBootstrap {
 	}
 
 	/**
-	 * Resolves playback state for a batch of metadata items purely from the local `progress`
-	 * table.
+	 * Resolves playback state for a batch of metadata items purely from the local `progress` table.
 	 *
-	 * Watched status cascades down the hierarchy: a watched show marks its seasons watched and a
-	 * watched show or season marks its episodes watched, without those children needing their own
-	 * rows. An item's own row always wins: a watched row keeps it watched, while a
-	 * `view_count <= 0` row forces it unwatched even under a watched ancestor. A `-1` view count
-	 * is the Continue Watching hide marker and is treated as if no row existed.
-	 *
-	 * For shows and seasons, `viewedLeafCount` lets the client mark their episodes watched from
-	 * the container's state alone: when the container resolves watched it is the item's
-	 * `leafCount` minus the explicit unwatched episode overrides in the user's progress rows, and
-	 * otherwise the number of watched episode rows under that show/season.
+	 * Episodes and movies report their own row. A show or season has no row, so its state is counted
+	 * from the watched episode rows under it (`grandparent_guid` for a show, `parent_guid` for a
+	 * season) and reported as `viewedLeafCount`. It is complete once that count reaches `leafCount`.
+	 * A `-1` view count is the Continue Watching hide marker and is never a watched state.
 	 */
 	async getState(items: Metadata[], user: MyPlexUser): Promise<PlexUserState[]> {
 		if (!user?.id || !items.length) return [];
+		const accountId = user.id;
 
-		const guids = [...new Set(
-			items
-				.flatMap((item) => [item.guid, item.parentGuid, item.grandparentGuid])
-				.filter((guid): guid is string => !!guid),
-		)];
-
-		if (!guids.length) return [];
-
-		//Containers need every leaf row of their show: overrides and watched counts live in the
-		//progress table, not in `items` (a show/season page rarely carries its episodes).
-		const containerShowGuids = [...new Set(
-			items
-				.map((item) => (item.type === 'show' ? item.guid : item.type === 'season' ? item.parentGuid : undefined))
-				.filter((guid): guid is string => !!guid),
-		)];
+		const leafGuids = guidsOf(items.filter(isLeaf));
+		const showGuids = guidsOf(items.filter((item) => item.type === 'show'));
+		const seasonGuids = guidsOf(items.filter((item) => item.type === 'season'));
+		if (!leafGuids.length && !showGuids.length && !seasonGuids.length) return [];
 
 		const rows = await db
 			.selectFrom('progress')
-			.select(['guid', 'grandparent_guid', 'parent_index', 'view_count', 'view_offset', 'last_viewed_at'])
-			.where('account_id', '=', user.id)
+			.select(['guid', 'grandparent_guid', 'parent_guid', 'view_count', 'view_offset', 'last_viewed_at'])
+			.where('account_id', '=', accountId)
 			.where((eb) =>
-				containerShowGuids.length
-					? eb.or([eb('guid', 'in', guids), eb('grandparent_guid', 'in', containerShowGuids)])
-					: eb('guid', 'in', guids),
+				eb.or([
+					...(leafGuids.length ? [eb('guid', 'in', leafGuids)] : []),
+					...(showGuids.length ? [eb('grandparent_guid', 'in', showGuids)] : []),
+					...(seasonGuids.length ? [eb('parent_guid', 'in', seasonGuids)] : []),
+				]),
 			)
 			.execute();
+
+		//Watched episodes per show and per season. Every episode of a container in `items` is in `rows`.
+		const watchedByShow = new Map<string, number>();
+		const watchedBySeason = new Map<string, number>();
+		for (const row of rows) {
+			if (!((row.view_count ?? 0) > 0)) continue;
+			if (row.grandparent_guid) watchedByShow.set(row.grandparent_guid, (watchedByShow.get(row.grandparent_guid) ?? 0) + 1);
+			if (row.parent_guid) watchedBySeason.set(row.parent_guid, (watchedBySeason.get(row.parent_guid) ?? 0) + 1);
+		}
 
 		//-1 is the Continue Watching hide marker, not a watched state.
 		const entries = new Map(rows.filter((row) => row.view_count !== -1).map((row) => [row.guid, row] as const));
 
-		const getEntry = (guid?: string) => (guid ? entries.get(guid) : undefined);
-		const isWatched = (guid?: string) => (getEntry(guid)?.view_count ?? 0) > 0;
-		const isUnwatchedOverride = (guid?: string) => !!getEntry(guid) && (getEntry(guid)?.view_count ?? 0) <= 0;
-
-		const resolvesWatched = (item: Metadata): boolean => {
-			if (isUnwatchedOverride(item.guid)) return false;
-			if (isWatched(item.guid)) return true;
-
-			//Cascade: episodes inherit from their season or show, seasons from their show. An
-			//explicitly unwatched season overrides a watched show, so its episodes can't inherit
-			//watched from the show while the season's own unwatched row stands.
-			if (item.type === 'episode') {
-				if (isUnwatchedOverride(item.parentGuid)) return false;
-				return isWatched(item.parentGuid) || isWatched(item.grandparentGuid);
-			}
-			if (item.type === 'season') return isWatched(item.parentGuid);
-
-			return false;
-		};
-
 		//State is matched by the caller on the plain id, matching getUserState.
 		const ratingKeyOf = (item: Metadata) => (item.ratingKey || item.key)?.split('/').pop();
-
-		//Leaf statistics per container, built from every episode row under the shows in play.
-		//Seasons are keyed by `<showGuid>#<seasonIndex>` since episode rows attribute via
-		//`grandparent_guid` + `parent_index` rather than the season's guid.
-		type LeafStats = { watched: number; unwatched: number };
-		const seasonStats = new Map<string, LeafStats>();
-		const showStats = new Map<string, LeafStats>();
-		const addStat = (statsByGuid: Map<string, LeafStats>, key: string, watched: boolean) => {
-			const stats = statsByGuid.get(key) ?? { watched: 0, unwatched: 0 };
-			stats[watched ? 'watched' : 'unwatched']++;
-			statsByGuid.set(key, stats);
-		};
-
-		const episodeByGuid = new Map(
-			items.filter((item) => item.type === 'episode' && item.guid).map((item) => [item.guid as string, item] as const),
-		);
-
-		for (const row of entries.values()) {
-			//Synced rows may lack show attribution; fall back to the episode's own metadata.
-			const episode = episodeByGuid.get(row.guid);
-			const showGuid = row.grandparent_guid ?? episode?.grandparentGuid;
-
-			//Rows without a show (the show's and season's own rows) are not leaves.
-			if (!showGuid) continue;
-
-			const watched = (row.view_count ?? 0) > 0;
-			addStat(showStats, showGuid, watched);
-
-			const seasonIndex = row.parent_index ?? episode?.parentIndex;
-			if (seasonIndex !== undefined && seasonIndex !== null) addStat(seasonStats, `${showGuid}#${seasonIndex}`, watched);
-		}
 
 		const states: PlexUserState[] = [];
 
 		for (const item of items) {
 			if (!item.guid) continue;
 
-			const entry = getEntry(item.guid);
-
 			if (item.type === 'show' || item.type === 'season') {
-				const stats =
-					item.type === 'season'
-						? item.parentGuid && item.index !== undefined && item.index !== null
-								? seasonStats.get(`${item.parentGuid}#${item.index}`)
-								: undefined
-						: showStats.get(item.guid);
-				const watched = resolvesWatched(item);
-				const viewedLeafCount = watched
-					? Math.max((item.leafCount ?? ((stats?.watched ?? 0) + (stats?.unwatched ?? 0))) - (stats?.unwatched ?? 0), 0)
-					: (stats?.watched ?? 0);
+				const watchedCount = (item.type === 'show' ? watchedByShow : watchedBySeason).get(item.guid) ?? 0;
+				if (!watchedCount) continue;
 
-				if (!entry && !viewedLeafCount) continue;
-
-				const state: PlexUserState = { ratingKey: ratingKeyOf(item) };
-
-				if (entry) {
-					state.viewCount = entry.view_count ?? 0;
-					state.viewOffset = entry.view_offset ?? 0;
-					state.lastViewedAt = entry.last_viewed_at ?? undefined;
-					state.viewState = watched ? 'complete' : 'unplayed';
-				}
-
-				if (viewedLeafCount) state.viewedLeafCount = viewedLeafCount;
-
-				states.push(state);
+				const watched = !!item.leafCount && watchedCount >= item.leafCount;
+				states.push({
+					ratingKey: ratingKeyOf(item),
+					viewCount: watched ? 1 : 0,
+					viewedLeafCount: watchedCount,
+					viewState: watched ? 'complete' : 'unplayed',
+				});
 				continue;
 			}
 
-			//Episodes and movies report state when they have their own row or are watched via a parent.
-			const watched = resolvesWatched(item);
-			if (!entry && !watched) continue;
+			const entry = entries.get(item.guid);
+			if (!entry) continue;
 
+			const viewCount = entry.view_count ?? 0;
 			states.push({
 				ratingKey: ratingKeyOf(item),
-				viewCount: watched ? Math.max(entry?.view_count ?? 1, 1) : (entry?.view_count ?? 0),
-				viewOffset: entry?.view_offset ?? 0,
-				lastViewedAt: entry?.last_viewed_at ?? undefined,
-				viewState: watched ? 'complete' : 'unplayed',
+				viewCount,
+				viewOffset: entry.view_offset ?? 0,
+				lastViewedAt: entry.last_viewed_at ?? undefined,
+				viewState: viewCount > 0 ? 'complete' : 'unplayed',
 			});
 		}
 
@@ -498,3 +423,5 @@ type ScrobbleAccess = {
 	endpoint: string;
 	expiresAt: number;
 };
+
+type ProgressUpdate = { type: 'scrobble' } | { type: 'unscrobble' } | { type: 'timeline'; viewOffset: number };

@@ -44,10 +44,9 @@ export class MetadataService {
 	 *
 	 * - Movies and episodes get their `Media` populated from the local Plex server via a single
 	 *   batched `resolveLocalItem` fetch (items without a local mapping keep their existing value).
-	 * - All items get their user state applied from `getUserState` (Plex state merged with the
-	 *   local `progress` table, local taking precedence): episodes/movies receive `viewOffset`,
-	 *   `viewCount`, `lastViewedAt` and `userState`, while shows/seasons receive `viewedLeafCount`
-	 *   and have their `leafCount` reduced by it, clamped at zero.
+	 * - All items get their user state applied from the local `progress` table: episodes/movies
+	 *   receive `viewOffset`, `viewCount`, `lastViewedAt` and `userState`, while shows/seasons receive
+	 *   `viewedLeafCount` counted from their episodes' rows.
 	 *
 	 * Requires an authenticated user (`user.id`) for the progress portions; without one only
 	 * `Media` hydration runs. Pass the active request's `plexToken` so the remote user state is
@@ -96,24 +95,20 @@ export class MetadataService {
 	/**
 	 * Builds the Continue Watching shelf for a user from the last four weeks of `progress` rows.
 	 *
-	 * Grouping happens in the query: rows are grouped by show (`grandparent_guid`, or a season row's
-	 * `parent_guid`, falling back to the item's own `guid` for movies) and reduced to the most
-	 * recently aired entry of each group, so a show ever yields at most one shelf item. A `view_count`
-	 * of `-1` is a hide marker placed on the group's key row by `removeFromContinueWatching`; any
-	 * later progress update (timeline, scrobble or unscrobble) deletes it and returns the show to the
-	 * shelf. A group stays hidden only while its newest activity is no newer than the marker. The
-	 * ranking and recency expressions are written so the query runs unchanged on SQLite and Postgres:
-	 * `row_number() over (partition by …)` (SQLite ≥ 3.25) and `coalesce(…, -1)` sentinels, which
-	 * keep nulls out of the ordering entirely so the two engines' opposite null-ordering defaults
-	 * never come into play.
+	 * Only episode and movie rows with real activity (a watched count or a playback offset) count.
+	 * They are grouped by show (`grandparent_guid`, falling back to the item's own `guid` for movies),
+	 * so a show yields at most one shelf item: the group's furthest row by season and episode index.
+	 * A `view_count` of `-1` is a hide marker placed on the group's key row by `removeFromContinueWatching`.
+	 * A group stays hidden only while its newest activity is no newer than the marker. The ranking and
+	 * recency expressions are written so the query runs unchanged on SQLite and Postgres:
+	 * `row_number() over (partition by …)` (SQLite ≥ 3.25) and `coalesce(…, -1)` sentinels, which keep
+	 * nulls out of the ordering entirely so the two engines' opposite null-ordering defaults never come
+	 * into play.
 	 *
-	 * Finished items continue from the highest watched index: the shelf walks the show's seasons in
-	 * order from the last watched one and returns the first candidate after it that is neither
-	 * watched (per the group's own rows) nor unaired; a finished season starts at the next season.
-	 * Items with nothing left to play are omitted. In-progress items
-	 * resolve directly to their own metadata. User state (`viewOffset`, `viewCount`,
-	 * `lastViewedAt`) and `Media` are applied by `hydrateMetadata`, after which results are sorted
-	 * by most recently viewed.
+	 * An in-progress row resumes directly. A finished row continues at the next episode the user has not
+	 * watched (`getNextEpisode`). Items with nothing left to play are omitted. User state (`viewOffset`,
+	 * `viewCount`, `lastViewedAt`) and `Media` are applied by `hydrateMetadata`, after which results are
+	 * sorted by most recently viewed.
 	 */
 	async getContinueWatching(user: MyPlexUser): Promise<Metadata[]> {
 		if (!user?.id) return [];
@@ -133,8 +128,8 @@ export class MetadataService {
 			updated_at: number | null;
 		};
 
-		//-1 sentinels keep null indexes out of the ranking. The rank columns mirror the old `score` helper:
-		//a season's own row is ranked at its own season with no episode, so it can't mask newer episodes.
+		//-1 sentinels keep null indexes out of the ranking. The hide marker is the show's own row, so it
+		//groups with the show's episodes through the same `coalesce(grandparent_guid, guid)` key.
 		const rows: ContinueWatchingRow[] = (
 			await sql<ContinueWatchingRow>`
 				with scoped as (
@@ -144,26 +139,21 @@ export class MetadataService {
 						view_count,
 						created_at,
 						updated_at,
-						coalesce(
-							grandparent_guid,
-							case when guid like 'plex://season/%' then parent_guid end,
-							guid
-						) as group_key,
+						coalesce(grandparent_guid, guid) as group_key,
 						${sql.raw(scalarMax)}(coalesce(updated_at, 0), coalesce(created_at, 0)) as recency,
 						--"index" is reserved in SQLite, so it is double-quoted here; both engines treat that as identifier quoting.
-						case
-							when grandparent_guid is null and parent_guid is not null and guid like 'plex://season/%'
-								then coalesce("index", -1)
-							else coalesce(parent_index, -1)
-						end as rank_season,
-						case
-							when grandparent_guid is null and parent_guid is not null and guid like 'plex://season/%'
-								then -1
-							else coalesce("index", -1)
-						end as rank_episode
+						coalesce(parent_index, -1) as rank_season,
+						coalesce("index", -1) as rank_episode
 					from progress
 					where account_id = ${user.id}
 						and (created_at >= ${fourWeeksAgo} or updated_at >= ${fourWeeksAgo})
+						and (
+							view_count = -1
+							or (
+								(guid like 'plex://episode/%' or guid like 'plex://movie/%')
+								and (coalesce(view_count, 0) > 0 or coalesce(view_offset, 0) > 0)
+							)
+						)
 				),
 				--A view_count of -1 on a group's key row hides the group until real activity is strictly newer.
 				stats as (
@@ -195,37 +185,21 @@ export class MetadataService {
 		).rows;
 
 		const entries = await Promise.all(
-			rows
-				.map(async (row) => {
-					const plexItem = await this.getItem(row?.guid?.split('/')?.pop() as string)
+			rows.map(async (row) => {
+				const plexItem = await this.getItem(row.guid.split('/').pop() as string);
+				if (!plexItem) return null;
 
-					// console.log(plexItem);
+				let item: Metadata | null = null;
+				if (plexItem.type === 'episode') {
+					//Mid-way episodes resume; finished ones continue at the next episode left to watch
+					item = (row.view_offset ?? 0) > 0 ? plexItem : await this.getNextEpisode(plexItem, user);
+				} else if (plexItem.type === 'movie') {
+					//A finished movie has nothing left to play, so it only stays while mid-way
+					item = (row.view_offset ?? 0) > 0 ? plexItem : null;
+				}
 
-					let item: Metadata | null | undefined;
-					if (plexItem?.type === 'season' || plexItem?.type === 'episode') {
-						if ((row.view_offset as number) > 0) item = plexItem;
-						else if ((row.view_count as number) > 0 || plexItem.type === 'season') {
-							//Finished rows continue from the first still-playable entry after the
-							//anchor; the show row supplies the watched cascade when it exists. A
-							//season row at zero is the unwatched override under a watched show and
-							//resolves to that season's first still-playable episode.
-							const showId = plexItem.grandparentGuid ?? (plexItem.type === 'season' ? plexItem.parentGuid : undefined);
-							const show = showId ? await this.getItem(showId.split('/').pop()!) : null;
-							item = await this.getNextEpisode(plexItem, show, user);
-						} else {
-							//An unwatched episode override under a watched parent: this episode is
-							//the next thing to watch, so the shelf points straight at it.
-							item = plexItem;
-						}
-					} else {
-						//Shows and movies: a watched container row means everything under it was
-						//cascaded away (or, for a movie, the scrobble reset the offset), so there is
-						//nothing left to resume and the shelf item is hidden unless playback is mid-way.
-						item = (row.view_offset ?? 0) > 0 ? plexItem : null;
-					}
-
-					return item ? { item: item, row } : null;
-				}),
+				return item ? { item, row } : null;
+			}),
 		);
 
 		// const entries: any[] = [];
@@ -254,103 +228,78 @@ export class MetadataService {
 	}
 
 	/**
-	 * Resolves the episode a finished shelf row continues to: the first entry after the given
-	 * season/episode anchor, in season-then-episode order, that the user can still watch. An
-	 * episode is playable unless it is watched (by its own row or cascaded from a watched
-	 * season/show, honouring explicit unwatched overrides) or has not aired yet; seasons are
-	 * skipped entirely when watched. Watch state comes from the group's own `progress` rows, so a
-	 * season re-marked watched after a show-level "watched" no longer surfaces its cascaded successor.
-	 * Returns null when the season/show has nothing left to play, hiding the shelf item.
+	 * Resolves the episode a finished shelf row continues to: the first episode after the given
+	 * episode, in season-then-episode order, that the user has not watched and that has aired.
+	 * Watch state comes from the show's own episode rows, so each candidate is one lookup.
+	 * Returns null when the show has nothing left to play, hiding the shelf item.
 	 */
-	async getNextEpisode (item: Metadata, show: Metadata | null, user: MyPlexUser): Promise<Metadata | null> {
-		if (item.type !== 'season' && item.type !== 'episode') return null;
-		if (!user?.id) return null;
+	async getNextEpisode(item: Metadata, user: MyPlexUser): Promise<Metadata | null> {
+		const showKey = item.grandparentRatingKey?.split('/').pop();
+		const showGuid = item.grandparentGuid;
+		if (!user?.id || !showKey || !showGuid) return null;
 
-		const showGuid = show?.guid ?? item.grandparentGuid ?? (item.type === 'season' ? item.parentGuid : undefined);
-
-		//Watched-state rows for the whole show group in one query: episode rows by show, season
-		//rows by their `parent_guid`, plus the show's own row for the watched cascade.
-		const rows = await db
-			.selectFrom('progress')
-			.select(['guid', 'view_count'])
-			.where('account_id', '=', user.id)
-			.where((eb) =>
-				showGuid
-					? eb.or([eb('grandparent_guid', '=', showGuid), eb('parent_guid', '=', showGuid), eb('guid', '=', showGuid)])
-					: eb.or([eb('guid', '=', item.parentGuid ?? ''), eb('guid', '=', item.guid ?? '')]),
-			)
-			.execute();
-
-		//-1 is the Continue Watching hide marker, not a watched state.
-		const stateByGuid = new Map(
-			rows.filter((row) => row.view_count !== -1).map((row) => [row.guid, row] as const),
+		const watched = new Set(
+			(
+				await db
+					.selectFrom('progress')
+					.select('guid')
+					.where('account_id', '=', user.id)
+					.where('grandparent_guid', '=', showGuid)
+					.where('view_count', '>', 0)
+					.execute()
+			).map((row) => row.guid),
 		);
-		const getEntry = (guid?: string) => (guid ? stateByGuid.get(guid) : undefined);
-		const isWatched = (guid?: string) => (getEntry(guid)?.view_count ?? 0) > 0;
-		const isUnwatchedOverride = (guid?: string) => !!getEntry(guid) && (getEntry(guid)?.view_count ?? 0) <= 0;
 
-		const isWatchedByCascade = (ep: Metadata): boolean => {
-			if (isUnwatchedOverride(ep.guid)) return false;
-			if (isWatched(ep.guid)) return true;
-			if (isUnwatchedOverride(ep.parentGuid)) return false;
-			return isWatched(ep.parentGuid) || isWatched(showGuid);
-		};
-		const isSeasonWatched = (season: Metadata): boolean => {
-			if (isUnwatchedOverride(season.guid)) return false;
-			return isWatched(season.guid) || isWatched(showGuid);
-		};
 		const hasAired = (ep: Metadata) =>
 			!ep.originallyAvailableAt || new Date(ep.originallyAvailableAt.replaceAll('-', '/')) <= new Date();
 
-		const playableIn = async (seasonId: string): Promise<Metadata | null> => {
-			const episodes = await this.getItemChildren(seasonId, 200);
-			return episodes?.find((ep) => !isWatchedByCascade(ep) && hasAired(ep)) ?? null;
-		};
+		//Seasons from the anchor's own onwards, and the episodes after the anchor within its season
+		const seasons = ((await this.getItemChildren(showKey, 100)) ?? [])
+			.filter((season) => (season.index ?? 0) >= (item.parentIndex ?? 0))
+			.sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
 
-		if (item.type === 'season') {
-			if (!isSeasonWatched(item)) {
-				const first = await playableIn(item.ratingKey.split('/').pop()!);
-				if (first) return first;
-			}
-			const nextSeason = await this.getNextSeason(item);
-			if (!nextSeason || isSeasonWatched(nextSeason)) return null;
-			return playableIn(nextSeason.ratingKey.split('/').pop()!);
+		for (const season of seasons) {
+			const episodes = ((await this.getItemChildren(season.ratingKey.split('/').pop()!, 200)) ?? [])
+				.filter((ep) => season.index !== item.parentIndex || (ep.index ?? 0) > (item.index ?? 0))
+				.sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+
+			const next = episodes.find((ep) => !watched.has(ep.guid ?? '') && hasAired(ep));
+			if (next) return next;
 		}
 
-		//Stay inside the anchor's own season: first still-playable episode after its index.
-		const episodes = await this.getItemChildren((item.parentRatingKey ?? item.parentGuid)?.split('/').pop()!, 200, 0);
-		const later = episodes?.filter((ep) => (ep.index ?? 0) > (item.index ?? 0)) ?? [];
-		const inSeason = later.find((ep) => !isWatchedByCascade(ep) && hasAired(ep));
-		if (inSeason) return inSeason;
-
-		const nextSeason = await this.getNextSeason(item);
-		if (!nextSeason || isSeasonWatched(nextSeason)) return null;
-		return playableIn(nextSeason.ratingKey.split('/').pop()!);
-	}
-
-	async getNextSeason (item: Metadata): Promise<Metadata | undefined> {
-		let seasons = await this.getItemChildren(item.type === 'season' ? item.parentRatingKey : item.grandparentRatingKey, 100, 0);
-		if (!seasons) return undefined;
-		//Episodes carry their episode index, so season lookup from an episode goes through its season.
-		if (item.type === 'episode') {
-			const season = await this.getItem((item.parentGuid ?? item.parentRatingKey)?.split('/').pop()!);
-			if (!season) return undefined;
-			seasons = await this.getItemChildren(season.parentRatingKey?.split('/').pop() ?? season.parentGuid?.split('/').pop()!, 100, 0);
-			if (!seasons) return undefined;
-			return seasons.find((s) => s.index === (season.index ?? -1) + 1);
-		}
-		let nextSeason = seasons.find((s) => s.index === (item.index ?? -1) + 1);
-		return nextSeason;
+		return null;
 	}
 
 
 	/**
+	 * Lists every episode under a show or season, each attributed to its season and show the way its
+	 * progress row needs (`parentGuid`, `parentIndex`, `grandparentGuid`). An episode or movie is
+	 * returned as itself.
+	 */
+	async getLeaves(item: Metadata): Promise<Metadata[]> {
+		if (item.type === 'episode' || item.type === 'movie') return [item];
+
+		const showGuid = item.type === 'show' ? item.guid : item.parentGuid;
+		const seasons = item.type === 'show' ? ((await this.getItemChildren(item.ratingKey.split('/').pop()!, 100)) ?? []) : [item];
+
+		const leaves: Metadata[] = [];
+		for (const season of seasons) {
+			const episodes = (await this.getItemChildren(season.ratingKey.split('/').pop()!, 200)) ?? [];
+			for (const episode of episodes) {
+				leaves.push({ ...episode, grandparentGuid: showGuid, parentGuid: season.guid, parentIndex: season.index } as Metadata);
+			}
+		}
+
+		return leaves;
+	}
+
+	/**
 	 * Hides an item from Continue Watching, mirroring Plex's `/actions/removeFromContinueWatching`.
 	 *
-	 * Writes a `view_offset` of `-1` marker on the row Continue Watching groups the item under:
-	 * the show itself for episodes (via `grandparentRatingKey`), otherwise the item's own row. For
-	 * a movie that also clears its playback position. Episode-level progress is left untouched, so
-	 * the show reappears on the shelf the next time one of its episodes is played.
+	 * Writes a `view_count` of `-1` marker on the row Continue Watching groups the item under: the show
+	 * itself for episodes (via `grandparentRatingKey`), otherwise the item's own row. For a movie that
+	 * also clears its playback position. Episode rows are left untouched, so the show reappears on the
+	 * shelf the next time one of its episodes has activity.
 	 */
 	async removeFromContinueWatching(ratingKey: string, user: MyPlexUser): Promise<void> {
 		if (!user?.id || !ratingKey) return;
@@ -358,7 +307,7 @@ export class MetadataService {
 		const item = await this.getItem(ratingKey.split('/').pop()!);
 		if (!item) throw new NotFoundException(`Unable to find metadata for ${ratingKey}`);
 
-		//The shelf's group key is the show for episodes, otherwise the item itself.
+		//The shelf's group key is the show for episodes and seasons, otherwise the item itself.
 		const groupRatingKey = item.grandparentRatingKey ?? (item.type === 'season' ? item.parentRatingKey : undefined) ?? item.ratingKey;
 		const targetId = groupRatingKey.split('/').pop()!;
 		const target = targetId === item.ratingKey.split('/').pop() ? item : await this.getItem(targetId);
@@ -371,8 +320,8 @@ export class MetadataService {
 			.values({
 				account_id: user.id,
 				guid: target.guid,
-				parent_guid: target.parentGuid,
-				grandparent_guid: target.grandparentGuid,
+				parent_guid: null,
+				grandparent_guid: null,
 				index: null,
 				parent_index: null,
 				view_count: -1,
@@ -384,7 +333,8 @@ export class MetadataService {
 				oc
 					.columns(['account_id', 'guid'])
 					.doUpdateSet({
-						grandparent_guid: target.type === 'show' ? target.guid : null,
+						parent_guid: null,
+						grandparent_guid: null,
 						index: null,
 						parent_index: null,
 						view_count: -1,
