@@ -92,6 +92,17 @@ describe('episode rows', () => {
 		expect(row?.view_count).toBe(2);
 	});
 
+	it('a show-level scrobble skips episodes that have not aired yet', async () => {
+		const { metadata, scrobbling } = setup();
+		const unaired = { ...episodeById.get('e4')!, originallyAvailableAt: '2999-01-01' } as Metadata;
+		vi.spyOn(metadata, 'getLeaves').mockResolvedValue([episodeById.get('e1')!, episodeById.get('e2')!, episodeById.get('e3')!, unaired]);
+
+		await scrobbling.scrobble(SHOW, user);
+
+		const guids = (await db.selectFrom('progress').select('guid').orderBy('guid').execute()).map((row) => row.guid);
+		expect(guids).toEqual(['plex://episode/e1', 'plex://episode/e2', 'plex://episode/e3']);
+	});
+
 	it('unscrobbling a show deletes its episode rows and its hide marker, and leaves other shows alone', async () => {
 		const { scrobbling } = setup();
 		await scrobbling.scrobble(SHOW, user);

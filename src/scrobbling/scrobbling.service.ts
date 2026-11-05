@@ -34,6 +34,9 @@ function decodeJwtExpiry(token: string): number | undefined {
 /** Episodes and movies are the only items with progress rows of their own. */
 const isLeaf = (item: Metadata) => item.type === 'episode' || item.type === 'movie';
 
+/** Items with no air date, or one that has passed, are visible. Future episodes are hidden from the library. */
+const hasAired = (item: Metadata) => !item.originallyAvailableAt || new Date(item.originallyAvailableAt.replaceAll('-', '/')) <= new Date();
+
 /** The distinct guids of the given items, skipping any without one. */
 const guidsOf = (items: Metadata[]) => [...new Set(items.map((item) => item.guid).filter((guid): guid is string => !!guid))];
 
@@ -101,7 +104,8 @@ export class ScrobblingService implements OnApplicationBootstrap {
 	 * - `scrobble` marks the leaf watched and stamps `last_viewed_at`, resetting `view_offset` since
 	 *   a scrobble only happens at the end of an item. A single episode or movie adds one to
 	 *   `view_count`; a container only sets it to 1 where it is still unwatched, so a show-level
-	 *   scrobble doesn't inflate the counts of episodes already watched.
+	 *   scrobble doesn't inflate the counts of episodes already watched. Only aired episodes are marked,
+	 *   so unaired ones under a container are skipped.
 	 * - `timeline` stores the current `viewOffset` (milliseconds) and stamps `last_viewed_at`, leaving
 	 *   `view_count` alone. It also clears a movie's `-1` hide marker, as any progress update does.
 	 * - `unscrobble` deletes the rows. An episode with no row is unwatched, so no empty rows are kept.
@@ -131,7 +135,10 @@ export class ScrobblingService implements OnApplicationBootstrap {
 		const now = Math.floor(Date.now() / 1000);
 		const scrobble = update.type === 'scrobble';
 
-		const rows = leaves
+		//Only visible episodes are marked watched, so a show or season scrobble leaves unaired episodes untouched
+		const visibleLeaves = scrobble ? leaves.filter(hasAired) : leaves;
+
+		const rows = visibleLeaves
 			.filter((leaf): leaf is Metadata & { guid: string } => !!leaf.guid)
 			.map((leaf) => ({
 				account_id: accountId,
