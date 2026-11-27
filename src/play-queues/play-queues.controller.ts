@@ -18,6 +18,7 @@ import util from 'util';
 import { LoggedInGuard } from '../middleware/logged-in.guard.js';
 import { rememberPlaybackUser } from '../status/playback-sessions.js';
 import { rememberTranscodeStart, transcodeStartOf } from './transcode-sessions.js';
+import { hasAired } from '../utils/aired.js';
 
 //Clients send the playback session id under different names, either as a header or as a query param
 const SESSION_ID_NAMES = ['x-plex-playback-session-id', 'x-plex-session-identifier', 'x-plex-session-id'];
@@ -29,6 +30,11 @@ export function playbackSessionIdOf(headers: Record<string, any>, query: Record<
 	}
 
 	return undefined;
+}
+
+//Unaired items are never served. The window keeps them so offsets still line up with Plex's episode list.
+function releasedOnly(window: { items: Metadata[]; totalSize: number }) {
+	return { ...window, items: window.items.filter(hasAired) };
 }
 
 @Controller()
@@ -67,8 +73,10 @@ export class PlayQueuesController {
 			show = item.guid ?? `plex://${item.type}/${item.ratingKey}`;
 			offset = 0;
 
-			const window = await this.playQueuesService.fetchWindow({ playbackSessionId, item: show, currentItem: '', offset });
-			currentItem = window.items[0]?.guid;
+			//Starts at the first episode, or movie, that has aired
+			const first = await this.playQueuesService.firstAiredFrom({ playbackSessionId, item: show, currentItem: '', offset });
+			currentItem = first.item?.guid;
+			offset = first.offset;
 		} else if (item.type == 'season') {
 			// Start at episode 1 of the season: offset = total episodes of all previous seasons
 			show = `plex://show/${item.parentRatingKey}`;
@@ -79,9 +87,14 @@ export class PlayQueuesController {
 				offset += season.leafCount ?? 0;
 			}
 
-			const window = await this.playQueuesService.fetchWindow({ playbackSessionId, item: show, currentItem: '', offset });
-			currentItem = window.items[0]?.guid;
+			//Starts at the first episode of the season that has aired
+			const first = await this.playQueuesService.firstAiredFrom({ playbackSessionId, item: show, currentItem: '', offset });
+			currentItem = first.item?.guid;
+			offset = first.offset;
 		} else if (item.type == 'episode') {
+			//An episode that has not aired yet is not found, as it is hidden from the library
+			if (!hasAired(item)) throw new NotFoundException('Episode has not aired yet');
+
 			// Offset = total episodes of all previous seasons + the episode's position in its season
 			const computed = await this.playQueuesService.computeOffset(item.ratingKey);
 			show = computed.item;
@@ -119,7 +132,7 @@ export class PlayQueuesController {
 			}
 		}
 
-		return serializePlayQueues(playQueue, window, false);
+		return serializePlayQueues(playQueue, releasedOnly(window), false);
 	}
 
 	//Resolves the episode after the current one in the background, so it is ready when the client transitions to it.
@@ -159,7 +172,7 @@ export class PlayQueuesController {
 			currentItem.Media = [localItem.Media[0]];
 		}
 
-		return serializePlayQueues(playQueue, window, false);
+		return serializePlayQueues(playQueue, releasedOnly(window), false);
 	}
 
 	@Get('/:id/timeline')

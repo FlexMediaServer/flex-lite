@@ -64,3 +64,28 @@ describe('transcode start', () => {
 		expect(options.query).toEqual({ path: '/library/metadata/555', session: 'replay-1', offset: '0', protocol: 'dash' });
 	});
 });
+
+describe('play queue release dates', () => {
+	const aired = { guid: 'plex://episode/1', ratingKey: '1', type: 'episode' };
+	const unaired = { guid: 'plex://episode/2', ratingKey: '2', type: 'episode', originallyAvailableAt: '2999-01-01' };
+
+	it('leaves unaired episodes out of the play queue response', async () => {
+		const playQueuesService = {
+			getPlayQueue: vi.fn(async () => ({ id: 1, playbackSessionId: 's', item: 'plex://show/9', currentItem: 'plex://episode/1', offset: 0 })),
+			fetchWindow: vi.fn(async () => ({ items: [aired, unaired], totalSize: 2 })),
+		};
+		const appService = { resolveMedia: vi.fn(async () => ({ Media: [{}] })) };
+		const controller = new PlayQueuesController(appService as any, {} as any, {} as any, {} as any, {} as any, playQueuesService as any);
+
+		const response: any = await controller.getPlayQueues(1, undefined);
+
+		expect(response.MediaContainer.Metadata.map((item: any) => item.ratingKey)).toEqual(['1']);
+	});
+
+	it('refuses an episode that has not aired yet', async () => {
+		const metadataService = { getItem: vi.fn(async () => unaired) };
+		const controller = new PlayQueuesController({} as any, metadataService as any, {} as any, {} as any, {} as any, {} as any);
+
+		await expect(controller.playQueues({ key: '/library/metadata/2' }, {}, {} as any)).rejects.toThrow('has not aired');
+	});
+});

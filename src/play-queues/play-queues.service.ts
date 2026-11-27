@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { Metadata } from '../dto/Metadata.entity.js';
 import { MetadataService } from '../metadata/metadata.service.js';
 import { db } from '../utils/database.js';
+import { firstAiredIndex } from '../utils/aired.js';
 
 export const PLAY_QUEUE_WINDOW_SIZE = 21;
 
@@ -177,20 +178,36 @@ export class PlayQueuesService {
 		});
 	}
 
-	/* The episode after the current one, from the given window or the next page when the current item is its last. */
+	/* The first aired item at or after the given offset, paging forward past unaired ones. Unaired items are never returned. */
+	async firstAiredFrom(playQueue: PlayQueue): Promise<{ item?: Metadata; offset: number }> {
+		let offset = playQueue.offset;
+		for (;;) {
+			const page = await this.fetchWindow({ ...playQueue, offset });
+			if (!page.items.length) return { item: undefined, offset };
+
+			const index = firstAiredIndex(page.items);
+			if (index !== -1) return { item: page.items[index], offset: offset + index };
+
+			offset += page.items.length;
+			//A movie is a single item whatever the offset, so stop once past the total
+			if (offset >= page.totalSize) return { item: undefined, offset };
+		}
+	}
+
+	/* The next aired episode after the current one, from the given window or the following pages. Unaired episodes are skipped. */
 	async findNext(playQueue: PlayQueue, items: Metadata[]): Promise<{ item?: Metadata; offset: number }> {
 		const currentRatingKey = playQueue.currentItem.split('/').pop();
 		const currentIndex = items.findIndex((item) => item.guid === playQueue.currentItem || item.ratingKey === currentRatingKey);
 
-		if (currentIndex !== -1 && currentIndex + 1 < items.length) {
-			// Next item is still within the fetched window
-			return { item: items[currentIndex + 1], offset: playQueue.offset + currentIndex + 1 };
+		const index = firstAiredIndex(items, currentIndex + 1);
+		if (currentIndex !== -1 && index !== -1) {
+			// Next aired item is still within the fetched window
+			return { item: items[index], offset: playQueue.offset + index };
 		}
 
 		// Window is exhausted, paginate to the next page of episodes
 		const offset = currentIndex === -1 ? playQueue.offset + 1 : playQueue.offset + items.length;
-		const next = await this.fetchWindow({ ...playQueue, offset });
-		return { item: next.items[0], offset };
+		return this.firstAiredFrom({ ...playQueue, offset });
 	}
 
 	/* Advances the queue to the next episode, paginating the window when exhausted. */
