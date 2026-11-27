@@ -3,6 +3,7 @@ import { Metadata } from './dto/Metadata.entity.js';
 import { StremioService } from './stremio/stremio.service.js';
 import { PMSService } from './plex/plex.service.js';
 import { probeUrl } from './utils/probe-url.js';
+import { withinDurationMargin } from './utils/duration.js';
 import { db } from './utils/database.js';
 
 @Injectable()
@@ -33,20 +34,28 @@ export class AppService implements OnModuleInit, OnApplicationShutdown {
 				const mappedUrl = await this.pmsService.resolveMappedUrl(item);
 				if (!mappedUrl) return localItem;
 
-				//A real stream that still responds is reused. The not found video is never reused, so resolution runs again for it
-				if (!(await this.pmsService.isNotFoundItem(item)) && await probeUrl(mappedUrl)) return localItem;
+				//A real stream that still responds and matches the item's length is reused. The not found video is never reused, so resolution runs again for it
+				if (!(await this.pmsService.isNotFoundItem(item)) && await probeUrl(mappedUrl) && withinDurationMargin(item.duration, localItem.Media[0].duration)) return localItem;
 
-				//Drop the mapping so resolution runs again instead of returning the item backed by the dead or not found URL
+				//Drop the mapping so resolution runs again instead of returning the item backed by the dead, mismatched or not found URL
 				await this.pmsService.removeMapping(item);
 			}
 
-			const stream = await this.stremioService.resolveStream(item);
-			if (!stream || !stream.url) return null;
-			if (stream.notFound) return await this.pmsService.addNotFound(item);
+			const candidates = await this.stremioService.streamCandidates(item);
+			if (!candidates) return null;
 
-			const itemId = await this.pmsService.addStream(item, stream.url);
-			if (!itemId) return null;
-			return (await this.pmsService.resolveLocalItem([item]))[0] ?? null;
+			for await (const url of candidates) {
+				const itemId = await this.pmsService.addStream(item, url);
+				if (!itemId) continue;
+
+				const resolved = (await this.pmsService.resolveLocalItem([item]))[0] ?? null;
+				if (resolved && withinDurationMargin(item.duration, resolved.Media?.[0]?.duration)) return resolved;
+
+				//The stream's length is not the item's, so its Plex copy and mapping are removed rather than cached. The next stream is tried.
+				await this.pmsService.removeMapping(item);
+			}
+
+			return await this.pmsService.addNotFound(item);
 		})().finally(() => this.tasks.delete(item.guid as string));
 
 		this.tasks.set(item.guid as string, task);

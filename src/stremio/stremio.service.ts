@@ -5,7 +5,6 @@ import { MetadataService } from '../metadata/metadata.service.js';
 import { ofetch } from 'ofetch';
 import { cache } from '../utils/database.js';
 import { probeUrl } from '../utils/probe-url.js';
-import { getMediaNotFoundUrl } from '../utils/media-not-found.js';
 
 //Stream resolution holds playback open, so the retry is kept to one extra attempt after a short wait
 const RESOLVE_ATTEMPTS = 2;
@@ -85,11 +84,18 @@ export class StremioService implements OnModuleInit {
 		return await ofetch<{ metas: StremioMeta[] }>(url);
 	}
 
-	public async resolveStream (item: Metadata): Promise<{ url: string | undefined; notFound?: boolean } | null> {
+	//Stream URLs for an item that respond, in addon order, produced lazily so the caller can reject one and take the next.
+	//Null when the item has no Stremio id.
+	public async streamCandidates (item: Metadata): Promise<AsyncGenerator<string> | null> {
 		const stremioId = await this.resolveStremioID(item);
 		if (!stremioId) return null;
 
-		const type = item.type === 'episode' ? 'series' : 'movie';
+		return this.workingStreamUrls(stremioId, item.type === 'episode' ? 'series' : 'movie');
+	}
+
+	private async *workingStreamUrls (stremioId: string, type: StremioContentType): AsyncGenerator<string> {
+		//A URL is offered once even when the refreshed stream list repeats it
+		const offered = new Set<string>();
 
 		//Stream lists can be empty or stale on the first try, so the retry fetches them fresh before falling back to not found
 		for (let attempt = 1; attempt <= RESOLVE_ATTEMPTS; attempt++) {
@@ -100,24 +106,18 @@ export class StremioService implements OnModuleInit {
 
 			const streams = await this.fetchAvailableStreams(stremioId, type, attempt > 1);
 
-			// Probe each stream URL until one is found working
 			for (const stream of streams ?? []) {
-				if (!stream.url) continue;
+				if (!stream.url || offered.has(stream.url)) continue;
+				offered.add(stream.url);
 
-				const isWorking = await probeUrl(stream.url);
-				if (isWorking) {
+				if (await probeUrl(stream.url)) {
 					console.debug(`Stream probe successful: ${stream.url}`);
-					return { url: stream.url };
+					yield stream.url;
+				} else {
+					console.debug(`Stream probe failed, trying next: ${stream.url}`);
 				}
-				console.debug(`Stream probe failed, trying next: ${stream.url}`);
 			}
 		}
-
-		// If no working stream found after every attempt, return not found URL
-		return {
-			url: getMediaNotFoundUrl(),
-			notFound: true,
-		};
 	}
 
 	private async fetchAvailableStreams(id: string, type: StremioContentType = 'movie', refresh = false) {
