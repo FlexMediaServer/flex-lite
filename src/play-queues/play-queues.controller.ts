@@ -17,6 +17,7 @@ import { AppService } from '../app.service.js';
 import util from 'util';
 import { LoggedInGuard } from '../middleware/logged-in.guard.js';
 import { rememberPlaybackUser } from '../status/playback-sessions.js';
+import { rememberTranscodeStart, transcodeStartOf } from './transcode-sessions.js';
 
 //Clients send the playback session id under different names, either as a header or as a query param
 const SESSION_ID_NAMES = ['x-plex-playback-session-id', 'x-plex-session-identifier', 'x-plex-session-id'];
@@ -321,6 +322,8 @@ export class PlayQueuesController {
 		if (query['X-Plex-Restriction-Profile'] === '') delete query['X-Plex-Restriction-Profile']
 
 		//This req can be called by some clients (eg. Tizen devices) without a path query param and just an existing session ID.
+		//Plex rejects that bare request, so the parameters the session was started with are replayed from the first start request.
+		const sessionId = query.session ? String(query.session) : undefined;
 		if (query.path) {
 			const itemId = query.path.split('/').pop()
 			let item = await this.metadataService.getItem(itemId)
@@ -331,7 +334,10 @@ export class PlayQueuesController {
 
 			query.path = localItem.key
 			if (query.videoResolution === '') query.videoResolution = '1080x1080'
-	}
+			rememberTranscodeStart(sessionId, query);
+		} else if (sessionId) {
+			query = { ...transcodeStartOf(sessionId), ...query };
+		}
 
 		//Manifests (.mpd, .m3u8), progressive transcodes (.mkv) and subtitle-only transcodes are all streamed through
 		const response = await this.pmsService.plexServerApi.raw(req.baseUrl + req.path, {
