@@ -82,6 +82,10 @@ export class ClientIdentifier implements NestMiddleware {
 		else if (userAgent?.includes('PlexTV/') && userAgent?.includes('tvOS')) {
 			req.clientType = ClientType.NATIVE_APPLE
 		}
+		// React Native Android TV (PlexTV/ with a year-based version 2026+)
+		else if (userAgent?.includes('PlexTV/') && userAgent?.includes('Android') && userAgent?.match(/PlexTV\/20\d{2}/)) {
+			req.clientType = ClientType.REACT_NATIVE
+		}
 		// Native Android TV (PlexTV/ with Android, not React Native)
 		else if (userAgent?.includes('PlexTV/') && userAgent?.includes('Android') && !userAgent?.match(/PlexMobile\/20\d{2}/)) {
 			req.clientType = ClientType.NATIVE_ANDROID

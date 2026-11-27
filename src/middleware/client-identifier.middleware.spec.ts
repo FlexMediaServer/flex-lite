@@ -27,4 +27,12 @@ describe('ClientIdentifier', () => {
 		expect(identify({ 'user-agent': 'Roku/DVP-15.2 (15.2.4.3455-E6)' })).toBe(ClientType.ROKU);
 		expect(identify({ 'x-plex-platform': 'Roku', 'user-agent': CHROME })).toBe(ClientType.WEB);
 	});
+
+	it('detects the React Native Android TV app from its year-based PlexTV version', () => {
+		expect(identify({ 'user-agent': 'Mozilla/5.0 (Linux; Android 12; TELUSTV-21T Build/STT5.250508.001; wv)PlexTV/2026.22.0 (971050578)' })).toBe(ClientType.REACT_NATIVE);
+	});
+
+	it('keeps the native Android TV app on its older PlexTV versions', () => {
+		expect(identify({ 'user-agent': 'Mozilla/5.0 (Linux; Android 14; onn. Full HD Streaming Device Build/URO1.250103.055.A2; wv)PlexTV/10.30.8.4222' })).toBe(ClientType.NATIVE_ANDROID);
+	});
 });
